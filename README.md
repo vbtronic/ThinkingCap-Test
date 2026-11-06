@@ -268,6 +268,7 @@ Please include:
 - the `results.json` that `evaluate.py` wrote to your `--out` directory
 - your trained model (or LoRA adapter) in `.safetensors` format, so we can evaluate it ourselves
 - a short `IDEA.md` with what you tried and why, what worked, what didn't, and the hardware you used
+- if you worked with a coding agent, its traces and your conversation with the harness, as a text document
 
 Does accuracy start to drop as you shorten further? Send us several checkpoints along the way. We're interested in how your algorithm trades length for accuracy, and a few points on that curve tell us more than one.
 
