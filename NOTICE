@@ -1,10 +1,11 @@
 ThinkingCap-Test — ColdCap submission
 
 Copyright 2026 BottleCapAI
-  The original ThinkingCap-Test code: https://github.com/BottleCapAI/ThinkingCap-Test
+  The original ThinkingCap-Test code and task description (TASK.md):
+  https://github.com/BottleCapAI/ThinkingCap-Test
 
 Copyright 2026 Viktor Brunclík
-  ColdCap: coldcap/, train_coldcap.py, eval_pair.py, kaggle/, IDEA.md,
+  ColdCap: coldcap/, train_coldcap.py, eval_pair.py, kaggle/, README.md, AGENTS.md, IDEA.md,
   tests/test_porridge.py, tests/test_hardware_compare.py, and the changes to
   evaluate.py and utils/eval/compare.py (GPU/dtype recording, comparison across
   hardware).
