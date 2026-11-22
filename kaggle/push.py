@@ -35,6 +35,9 @@ def main():
     parser.add_argument("--source", action="append", default=[],
                         help="Kernel whose output to attach as input (user/slug), repeatable")
     parser.add_argument("--accelerator", default="NvidiaTeslaT4")
+    # The image the author's working kernels ran on; an empty image left a kernel QUEUED for hours.
+    parser.add_argument("--docker-image", default="gcr.io/kaggle-private-byod/python@sha256:"
+                        "fc720c15545eb096a510e1f085b17fc118387a007599424d953a4f327b71cacf")
     parser.add_argument("--kaggle", default="kaggle", help="How to call the CLI")
     arguments = parser.parse_args()
 
@@ -58,6 +61,7 @@ def main():
             "enable_gpu": True, "enable_tpu": False, "enable_internet": True,
             "dataset_sources": [], "competition_sources": [], "model_sources": [],
             "kernel_sources": arguments.source, "machine_shape": arguments.accelerator,
+            "docker_image": arguments.docker_image,
         }, indent=2))
         command = arguments.kaggle.split() + ["kernels", "push", "-p", str(folder),
                                               "--accelerator", arguments.accelerator]
