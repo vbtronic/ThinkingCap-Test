@@ -1,3 +1,6 @@
+# Copyright 2026 BottleCapAI
+# Modified 2026 by Viktor Brunclík: GPU/dtype recording and comparison across hardware (see NOTICE)
+# SPDX-License-Identifier: Apache-2.0
 """Scores one checkpoint on four benchmarks and writes the result.
 
     python utils/eval/benchmarks.py                      # once, writes ./questions
@@ -87,6 +90,7 @@ def main():
 
     # records are the answers: one generation per question per sample, graded.
     grading = grading_context(suite, arguments)
+    arguments.hardware = previous_hardware(out) if arguments.regrade else None
     records = reload_records(out) if arguments.regrade else generate(questions, arguments, out)
     grade_all(questions, records, grading)
     save_records(out, records)
@@ -139,6 +143,11 @@ def parse_arguments():
                         help="Parallel MBPP+ grading processes")
     parser.add_argument("--regrade", action="store_true",
                         help=f"Re-grade a finished run's {RECORDS} without generating again")
+    parser.add_argument("--dtype", default="auto", choices=("auto", "bfloat16", "float16"),
+                        help="Precision for vLLM. auto keeps the model's bf16 where the GPU has "
+                             "it and falls back to float16 elsewhere (T4, V100). Score the base "
+                             "model and your checkpoint with the same card and dtype; compare.py "
+                             "refuses runs whose dtype differs")
     arguments = parser.parse_args()
     # Pin the base model unless the user named their own: a default run should
     # be reproducible without anyone having to know the commit. Their weights
@@ -276,6 +285,8 @@ def generate(questions, arguments, out):
                          "prompt budget; it would be truncated and score as a failure")
     # The engine has to hold the largest budget any benchmark in this run uses.
     model, lora = load_engine(arguments, max(caps_in_use(questions, arguments).values()))
+    arguments.hardware = hardware(arguments)
+    print(f"Generating on {arguments.hardware['gpu']} in {arguments.hardware['dtype']}", flush=True)
 
     records = []
     with (out / RECORDS).open("w") as stream:
@@ -305,6 +316,7 @@ def load_engine(arguments, longest_generation):
     from vllm import LLM
     from vllm.lora.request import LoRARequest
 
+    arguments.dtype = resolve_dtype(arguments.dtype)
     rank = None
     if arguments.adapter:
         rank = json.loads((Path(arguments.adapter) / "adapter_config.json").read_text())["r"]
@@ -312,6 +324,7 @@ def load_engine(arguments, longest_generation):
                 tokenizer_revision=arguments.revision,
                 max_model_len=longest_generation + PROMPT_BUDGET,
                 gpu_memory_utilization=0.85,
+                dtype=arguments.dtype,
                 enable_prefix_caching=False, generation_config="vllm", seed=arguments.seed,
                 enable_lora=rank is not None, max_lora_rank=rank or 16)
     if not arguments.adapter:
@@ -321,6 +334,36 @@ def load_engine(arguments, longest_generation):
     if 1 not in model.llm_engine.list_loras():
         raise ValueError("Adapter did not register")
     return model, lora
+
+
+def resolve_dtype(requested):
+    """auto -> bfloat16 where the GPU vLLM runs on has it natively, else float16.
+
+    vLLM runs on the first visible device, so that is the one asked; pick another
+    card with CUDA_VISIBLE_DEVICES. Every other device is irrelevant here.
+    """
+    if requested != "auto":
+        return requested
+    from coldcap.hw import best_dtype
+    return "bfloat16" if best_dtype(0) == "bfloat16" else "float16"
+
+
+def hardware(arguments):
+    """Which card and precision generated this run, for results.json and compare.py."""
+    import torch
+    import vllm
+    name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+    return {"gpu": name, "dtype": arguments.dtype, "vllm": vllm.__version__,
+            "torch": torch.__version__,
+            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")}
+
+
+def previous_hardware(out):
+    """A regrade generates nothing, so it keeps the hardware the generations came from."""
+    try:
+        return json.loads((out / RESULTS).read_text()).get("hardware")
+    except (OSError, ValueError):
+        return None
 
 
 def token_cap(dataset, arguments):
@@ -455,6 +498,7 @@ def save_results(out, arguments, suite, grading, results, failed, caps):
         "revisions": suite["revisions"], "cohort_sha256": suite["cohort_sha256"],
         "cohort_total": suite["total"], "smoke": suite.get("smoke", False),
         "selection": suite.get("selection", "full"),
+        "hardware": getattr(arguments, "hardware", None),
         "results": results, "failed_benchmarks": failed,
     }, indent=2) + "\n")
 

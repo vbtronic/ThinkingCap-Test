@@ -1,0 +1,12 @@
+ThinkingCap-Test — ColdCap submission
+
+Copyright 2026 BottleCapAI
+  The original ThinkingCap-Test code: https://github.com/BottleCapAI/ThinkingCap-Test
+
+Copyright 2026 Viktor Brunclík
+  ColdCap: coldcap/, train_coldcap.py, eval_pair.py, kaggle/, IDEA.md,
+  tests/test_porridge.py, tests/test_hardware_compare.py, and the changes to
+  evaluate.py and utils/eval/compare.py (GPU/dtype recording, comparison across
+  hardware).
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).

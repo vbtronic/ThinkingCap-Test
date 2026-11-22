@@ -1,3 +1,6 @@
+# Copyright 2026 BottleCapAI
+# Modified 2026 by Viktor Brunclík: GPU/dtype recording and comparison across hardware (see NOTICE)
+# SPDX-License-Identifier: Apache-2.0
 """Compares two checkpoints that evaluate.py scored separately.
 
     from utils.eval.compare import compare, report
@@ -171,7 +174,12 @@ def check(base, candidate):
     """
     problems = [describe_mismatch(f, why, base.get(f), candidate.get(f))
                 for f, why in MUST_MATCH.items() if base.get(f) != candidate.get(f)]
-    if base["model"] == candidate["model"] and base["adapter"] == candidate["adapter"]:
+    # Different GPUs or dtypes never block a comparison: pairing is by question and
+    # seed, which both runs share. hardware_note() says what the difference costs.
+    # The same checkpoint on two different setups is an A/A calibration, not a no-op.
+    same_checkpoint = (base["model"] == candidate["model"]
+                       and base["adapter"] == candidate["adapter"])
+    if same_checkpoint and same_setup(base, candidate):
         problems.append("  checkpoint   both runs scored the same model and adapter\n"
                         "               there is nothing to compare")
     shared = sorted(set(base["benchmarks"]) & set(candidate["benchmarks"]))
@@ -226,7 +234,50 @@ def token_reduction(before, after):
 
 def describe(directory, meta):
     return {"run": str(Path(directory).resolve()), "model": meta["model"],
-            "adapter": meta["adapter"]}
+            "adapter": meta["adapter"], "hardware": hardware_of(meta)}
+
+
+def hardware_of(meta):
+    """{gpu, dtype, ...} from results.json; {} for runs older than that field."""
+    return meta.get("hardware") or {}
+
+
+def setup_of(hardware):
+    """The part of the hardware that changes what gets generated."""
+    return (hardware.get("gpu"), hardware.get("dtype"))
+
+
+def same_setup(base, candidate):
+    """True when both runs used one card and dtype -- or when either does not say."""
+    before, after = hardware_of(base), hardware_of(candidate)
+    return not before or not after or setup_of(before) == setup_of(after)
+
+
+def hardware_note(comparison):
+    """Warn when the two runs ran on different cards, or when either did not say.
+
+    The pairing still holds -- same questions, same seeds -- but kernels differ
+    between GPU models, so the same seed no longer draws the same text and part
+    of the difference below is the card, not the training.
+    """
+    before, after = (comparison[side].get("hardware") or {} for side in ("base", "candidate"))
+    if not before or not after:
+        return ("\nAt least one run does not record its GPU and dtype (an older evaluate.py),\n"
+                "so this comparison cannot check that both used the same card.")
+    if setup_of(before) == setup_of(after):
+        return ""
+    calibration = (comparison["base"]["model"] == comparison["candidate"]["model"]
+                   and comparison["base"]["adapter"] == comparison["candidate"]["adapter"])
+    setups = (f"{before.get('gpu')} {before.get('dtype')} vs "
+              f"{after.get('gpu')} {after.get('dtype')}")
+    if calibration:
+        return (f"\nA/A CALIBRATION: the same checkpoint on two setups ({setups}).\n"
+                "Everything above is the effect of the hardware alone. Expect intervals that\n"
+                "cover zero; an interval that does not is a hardware bias to keep in mind.")
+    return (f"\nThe runs used different setups ({setups}).\n"
+            "Rows are still paired by question and seed, but the same seed draws different\n"
+            "text on another card or dtype, so part of the difference is hardware. Run\n"
+            "eval_pair.py to score the base model on the candidate's own setup.")
 
 
 def loading_note(comparison):
@@ -258,6 +309,7 @@ def report(comparison):
     lines.append(ungraded_note(comparison.get("ungraded_benchmarks")))
     lines.append(leaderboard_note(comparison["full_evaluation"]))
     lines.append(loading_note(comparison))
+    lines.append(hardware_note(comparison))
     return "\n".join(lines).rstrip()
 
 

@@ -1,0 +1,166 @@
+# Copyright 2026 Viktor Brunclík
+# SPDX-License-Identifier: Apache-2.0
+"""Rollouts: generate G answers per prompt, on whichever GPU is meant for it.
+
+Two backends with one interface, `engine.generate(requests, adapter) -> list of results`:
+
+* VLLMEngine runs vLLM in its own process, pinned to one GPU through CUDA_VISIBLE_DEVICES.
+  It picks its own dtype for that card (bf16 on Ampere+, fp16 on a T4), independently of
+  the trainer's card. The trainer hands it the current LoRA as a directory on disk.
+* HFEngine generates with the trainer's own model, in-process. Slow, but it runs where
+  vLLM cannot (a P100) and needs no second copy of anything.
+
+A request is {"ids": [prompt token ids], "max_tokens": int, "seed": int}.
+A result is {"tokens": [generated ids, eos included], "finished": bool}; finished is
+False when the cap cut the answer off, which the grader counts as wrong -- as evaluate.py does.
+
+Sampling is the evaluation's (temperature 0.6, top-p 0.95, top-k 20): we train on the
+same distribution of answers that will be scored.
+"""
+
+import multiprocessing as mp
+import os
+import traceback
+
+SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
+
+
+class VLLMEngine:
+    def __init__(self, device, model, revision, eos_ids, max_model_len, lora_rank,
+                 memory=0.85, seed=0, dtype="auto"):
+        context = mp.get_context("spawn")
+        self.conn, child = context.Pipe()
+        config = {"model": model, "revision": revision, "eos_ids": list(eos_ids),
+                  "max_model_len": max_model_len, "lora_rank": lora_rank,
+                  "memory": memory, "seed": seed, "dtype": dtype}
+        # The child inherits the environment at start: show it only its own card.
+        saved = os.environ.get("CUDA_VISIBLE_DEVICES")
+        visible = saved.split(",") if saved else None
+        os.environ["CUDA_VISIBLE_DEVICES"] = visible[device] if visible else str(device)
+        try:
+            self.process = context.Process(target=serve, args=(child, config), daemon=True)
+            self.process.start()
+        finally:
+            if saved is None:
+                os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+            else:
+                os.environ["CUDA_VISIBLE_DEVICES"] = saved
+        kind, payload = self.conn.recv()
+        if kind != "ready":
+            raise RuntimeError(f"vLLM worker failed to start:\n{payload}")
+        self.info = payload   # {"gpu": ..., "dtype": ...} of the card it actually got
+        self.adapter_id = 0
+
+    def generate(self, requests, adapter=None):
+        """adapter: a directory saved by peft, or None for the base model."""
+        if adapter is not None:
+            self.adapter_id += 1
+        self.conn.send(("generate", requests, adapter, self.adapter_id))
+        kind, payload = self.conn.recv()
+        if kind != "done":
+            raise RuntimeError(f"vLLM worker failed:\n{payload}")
+        return payload
+
+    def close(self):
+        try:
+            self.conn.send(("stop", None, None, None))
+        except (BrokenPipeError, OSError):
+            pass
+        self.process.join(timeout=30)
+
+
+def serve(conn, config):
+    """The vLLM worker process: build the engine, then answer requests until told to stop."""
+    try:
+        os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+        import torch
+        from vllm import LLM, SamplingParams
+        from vllm.lora.request import LoRARequest
+        from coldcap.hw import best_dtype
+
+        dtype = best_dtype(0) if config["dtype"] == "auto" else config["dtype"]
+        llm = LLM(model=config["model"], revision=config["revision"],
+                  tokenizer_revision=config["revision"], dtype=dtype,
+                  max_model_len=config["max_model_len"],
+                  gpu_memory_utilization=config["memory"], seed=config["seed"],
+                  enable_lora=True, max_lora_rank=config["lora_rank"], max_loras=1,
+                  max_cpu_loras=2, enable_prefix_caching=True, generation_config="vllm")
+        conn.send(("ready", {"gpu": torch.cuda.get_device_name(0), "dtype": dtype}))
+    except Exception:
+        conn.send(("error", traceback.format_exc()))
+        return
+
+    while True:
+        kind, requests, adapter, adapter_id = conn.recv()
+        if kind == "stop":
+            return
+        try:
+            lora = LoRARequest(f"policy-{adapter_id}", adapter_id, adapter) if adapter else None
+            params = [SamplingParams(max_tokens=r["max_tokens"], seed=r["seed"],
+                                     stop_token_ids=config["eos_ids"], **SAMPLING)
+                      for r in requests]
+            outputs = llm.generate([{"prompt_token_ids": r["ids"]} for r in requests], params,
+                                   lora_request=lora, use_tqdm=False)
+            results = []
+            for output in outputs:
+                tokens = list(output.outputs[0].token_ids)
+                results.append({"tokens": tokens,
+                                "finished": bool(tokens) and tokens[-1] in config["eos_ids"]})
+            conn.send(("done", results))
+        except Exception:
+            conn.send(("error", traceback.format_exc()))
+
+
+class HFEngine:
+    """Fallback: generate with the policy itself. Ignores `adapter` -- it *is* the adapter."""
+
+    info = None
+
+    def __init__(self, model, tokenizer, eos_ids, batch=32):
+        import torch
+        self.torch, self.model, self.tokenizer = torch, model, tokenizer
+        self.eos_ids, self.batch = list(eos_ids), batch
+        self.pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else self.eos_ids[0]
+        device = next(model.parameters()).device
+        self.info = {"gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu",
+                     "dtype": str(next(model.parameters()).dtype).replace("torch.", "")}
+
+    def generate(self, requests, adapter=None):
+        torch = self.torch
+        device = next(self.model.parameters()).device
+        was_training = self.model.training
+        self.model.eval()
+        results = []
+        try:
+            for start in range(0, len(requests), self.batch):
+                chunk = requests[start:start + self.batch]
+                width = max(len(r["ids"]) for r in chunk)
+                ids = torch.full((len(chunk), width), self.pad, dtype=torch.long)
+                mask = torch.zeros_like(ids)
+                for row, r in enumerate(chunk):          # left padding
+                    ids[row, width - len(r["ids"]):] = torch.tensor(r["ids"])
+                    mask[row, width - len(r["ids"]):] = 1
+                torch.manual_seed(chunk[0]["seed"])
+                with torch.no_grad():
+                    out = self.model.generate(
+                        input_ids=ids.to(device), attention_mask=mask.to(device),
+                        max_new_tokens=max(r["max_tokens"] for r in chunk), do_sample=True,
+                        eos_token_id=self.eos_ids, pad_token_id=self.pad, use_cache=True,
+                        **SAMPLING)
+                for row, r in enumerate(chunk):
+                    tokens = out[row, width:].tolist()
+                    results.append(cut(tokens, r["max_tokens"], self.eos_ids))
+        finally:
+            self.model.train(was_training)
+        return results
+
+    def close(self):
+        pass
+
+
+def cut(tokens, cap, eos_ids):
+    """Trim padding after eos and apply this request's own cap."""
+    for position, token in enumerate(tokens[:cap]):
+        if token in eos_ids:
+            return {"tokens": tokens[:position + 1], "finished": True}
+    return {"tokens": tokens[:cap], "finished": False}
