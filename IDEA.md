@@ -19,6 +19,13 @@ filter trained only on sequences that were neither too easy nor too hard, and th
 was that savings only come from compute that is never spent (masking a token still pays for its
 forward and backward). Here the porridge is turned around: we do **not** want the middle.
 
+**Why "ColdCap".** In *Goldilocks and the Three Bears* the girl tastes three bowls of porridge —
+too hot, too cold, and *just right* — and picks the middle one. A Goldilocks filter does the same
+with training data. ColdCap deliberately picks the **cold** bowl instead: not the *hot* questions
+the model is still struggling with (where shortening hurts), and not the *icy* ones that are
+already as short as they get (nothing to learn) — only the cold ones, solved reliably but with
+thinking to spare. The *Cap* is a nod to the test's family of names (ThinkingCap, BottleCap, NoCap).
+
 ## Method
 
 GRPO with LoRA on Qwen3-0.6B, thinking on, sampling exactly as in the evaluation
