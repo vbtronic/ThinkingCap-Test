@@ -14,3 +14,20 @@ data/
 
 outputs/
 *.log
+
+# macOS, Jupyter
+.DS_Store
+.ipynb_checkpoints/
+
+# secrets: never commit tokens
+kaggle.json
+access_token
+.env
+.env.*
+
+# model weights (the LoRA lives in its own repo) and submission packages
+*.safetensors
+*.bin
+*.pt
+*.bundle
+*.zip
