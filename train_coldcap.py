@@ -20,7 +20,8 @@ alpha / beta to stay within 0.2 accuracy points per 1% of tokens saved, and a ch
 lands in <out>/ckpt-<step>/ with its numbers.
 
 GPUs: --train-gpu and --rollout-gpu may name different cards, even different models; each
-side chooses its own precision. With one GPU both share it.
+side chooses its own precision. By default every GPU generates (the training card shares
+its memory with a vLLM engine); with one GPU training and generation share it.
 """
 
 import argparse
@@ -62,15 +63,21 @@ def main():
     if not devices:
         raise SystemExit("No CUDA device")
     train_gpu = arguments.train_gpu
-    rollout_gpu = arguments.rollout_gpu
-    if rollout_gpu is None:
-        rollout_gpu = 1 if len(devices) > 1 and train_gpu == 0 else train_gpu
+    if arguments.rollout_gpu:
+        rollout_gpus = [int(g) for g in arguments.rollout_gpu.split(",")]
+    else:
+        # Training takes seconds per step, generation minutes: with two cards both generate,
+        # and the training card lends vLLM part of its memory.
+        others = [d["index"] for d in devices if d["index"] != train_gpu]
+        rollout_gpus = others + [train_gpu] if others else [train_gpu]
     backend = arguments.rollout_backend
     if backend == "auto":
-        backend = "vllm" if devices[rollout_gpu]["vllm"] else "hf"
-    shared = rollout_gpu == train_gpu
+        backend = "vllm" if all(devices[g]["vllm"] for g in rollout_gpus) else "hf"
+    if backend == "hf":
+        rollout_gpus = [train_gpu]
     print(f"train on cuda:{train_gpu} ({devices[train_gpu]['name']}), roll out on "
-          f"cuda:{rollout_gpu} ({devices[rollout_gpu]['name']}) with {backend}", flush=True)
+          + ", ".join(f"cuda:{g} ({devices[g]['name']})" for g in rollout_gpus)
+          + f" with {backend}", flush=True)
 
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, revision=BASE_REVISION)
     eos = tokenizer.eos_token_id
@@ -115,12 +122,16 @@ def main():
     # before the trainer fragments it.
     engine = None
     if backend == "vllm":
-        from coldcap.rollout import VLLMEngine
-        engine = VLLMEngine(rollout_gpu, BASE_MODEL, BASE_REVISION, eos_ids,
-                            max_model_len=PROMPT_BUDGET + porridge.max_cap,
-                            lora_rank=arguments.rank, seed=arguments.seed,
-                            memory=arguments.vllm_memory or (0.35 if shared else 0.85),
-                            dtype=arguments.rollout_dtype)
+        from coldcap.rollout import EnginePool, VLLMEngine
+        engines = []
+        for gpu in rollout_gpus:
+            shared = gpu == train_gpu
+            memory_share = (arguments.vllm_shared_memory if shared else arguments.vllm_memory)
+            engines.append(VLLMEngine(gpu, BASE_MODEL, BASE_REVISION, eos_ids,
+                                      max_model_len=PROMPT_BUDGET + porridge.max_cap,
+                                      lora_rank=arguments.rank, seed=arguments.seed,
+                                      memory=memory_share, dtype=arguments.rollout_dtype))
+        engine = engines[0] if len(engines) == 1 else EnginePool(engines)
     model, train_dtype = load_policy(BASE_MODEL, BASE_REVISION, train_gpu, arguments.train_dtype,
                                      arguments.rank, adapter=str(adapter_dir) if adapter_dir else None)
     if backend == "hf":
@@ -334,11 +345,14 @@ def parse_arguments():
     p.add_argument("--seed", type=int, default=0)
     # hardware: the two sides are chosen and configured independently
     p.add_argument("--train-gpu", type=int, default=0)
-    p.add_argument("--rollout-gpu", type=int, help="Default: 1 if there are two GPUs, else 0")
+    p.add_argument("--rollout-gpu", help="Comma-separated GPUs for vLLM (default: every GPU, "
+                   "the training one shared)")
     p.add_argument("--rollout-backend", default="auto", choices=("auto", "vllm", "hf"))
     p.add_argument("--train-dtype", default="auto", choices=("auto", "bfloat16", "float16", "float32"))
     p.add_argument("--rollout-dtype", default="auto", choices=("auto", "bfloat16", "float16"))
-    p.add_argument("--vllm-memory", type=float, help="vLLM's share of its GPU (default 0.85, 0.35 shared)")
+    p.add_argument("--vllm-memory", type=float, default=0.85, help="vLLM's share of a card of its own")
+    p.add_argument("--vllm-shared-memory", type=float, default=0.5,
+                   help="vLLM's share of the training card when it generates there too")
     # optimisation
     p.add_argument("--steps", type=int, default=200)
     p.add_argument("--prompts-per-step", type=int, default=16, help="Cold groups trained per step")
@@ -349,7 +363,10 @@ def parse_arguments():
     p.add_argument("--rank", type=int, default=16)
     p.add_argument("--kl", type=float, default=0.0, help="KL to the base model (0 = off, cheaper)")
     p.add_argument("--no-std", action="store_true", help="Centre advantages without dividing by std")
-    p.add_argument("--sources", help="Comma-separated subset of gsm8k,skywork,commonsense_qa,arc_easy")
+    # Skywork is competition maths: at 0.6B it is hot porridge almost always (0 of 10 solved
+    # in the smoke run), and each first visit costs a full group of maximum-length answers.
+    p.add_argument("--sources", default="gsm8k,commonsense_qa,arc_easy",
+                   help="Comma-separated subset of gsm8k,skywork,commonsense_qa,arc_easy")
     # validation
     p.add_argument("--eval-every", type=int, default=20)
     p.add_argument("--val-per-source", type=int, default=50)

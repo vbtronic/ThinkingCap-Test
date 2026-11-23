@@ -29,8 +29,11 @@ thinking to spare. The *Cap* is a nod to the test's family of names (ThinkingCap
 ## Method
 
 GRPO with LoRA on Qwen3-0.6B, thinking on, sampling exactly as in the evaluation
-(T = 0.6, top-p 0.95, top-k 20). Training data: the four suggested sets (GSM8K, Skywork-OR1
-easy, CommonsenseQA, ARC Easy); none of the evaluation benchmarks.
+(T = 0.6, top-p 0.95, top-k 20). Training data: three of the four suggested sets (GSM8K,
+CommonsenseQA, ARC Easy); none of the evaluation benchmarks. Skywork-OR1 is left out: for a
+0.6B model it is hot porridge almost everywhere (0 of 10 validation problems solved in the
+first test run), so it would only burn full-length generations — early ejection at the level
+of a whole dataset.
 
 ### 1. Porridge temperature of a prompt
 
@@ -53,7 +56,8 @@ Advantages are group-relative (GRPO), loss is token-normalised, one on-policy up
 ### 3. Early ejection — compute never spent
 
 - **before generation**: prompts already known to be hot or icy are skipped (re-tested with
-  10 % probability, since the model changes);
+  10 % probability, since the model changes); an unknown prompt gets the evaluation's own
+  4096-token cap, so a long but correct answer is never mistaken for a wrong one;
 - **during generation**: a known prompt may generate at most `2 × L_min` tokens — a longer answer
   could not earn a positive advantage anyway;
 - **before backward**: sequences with zero advantage are dropped.
@@ -93,8 +97,12 @@ itself on two setups is an A/A calibration of the hardware effect.
 
 ## Hardware
 
-Kaggle free tier, 2 × NVIDIA T4 (16 GB): GPU 0 trains (fp16 + fp32 LoRA), GPU 1 generates
-with vLLM (fp16). Evaluation on one T4 in fp16, baseline scored the same way.
+Kaggle free tier, 2 × NVIDIA T4 (16 GB). Generation is the bottleneck: a benchmark run
+(`kaggle/bench.py`) measured ~460 generated tokens/s per T4 with the LoRA (vLLM, Triton
+attention; FlashInfer fails on the T4, Flex attention is 2× slower), while one training
+step on ~24 k tokens takes ~16 s. So both GPUs generate with vLLM (fp16), and GPU 0 also
+trains (fp16 + fp32 LoRA) in the memory vLLM leaves free. Evaluation on one T4 in fp16 with
+Triton attention, baseline scored the same way.
 
 ## How to run
 

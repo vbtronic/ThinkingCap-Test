@@ -21,7 +21,8 @@ shorter at the same accuracy. Task and rules: `TASK.md`. Method: `IDEA.md`. Over
 
 - `coldcap/porridge.py` — pure Python, no torch: temperature filter, rewards, memory, controller.
   Keep it that way so `tests/test_porridge.py` runs anywhere.
-- `coldcap/rollout.py` — vLLM worker process pinned to one GPU via `CUDA_VISIBLE_DEVICES`; HF fallback.
+- `coldcap/rollout.py` — one vLLM worker process per GPU, pinned via `CUDA_VISIBLE_DEVICES`
+  (`EnginePool` splits requests between them); HF fallback.
 - `coldcap/policy.py` — LoRA policy and loss; logits are never materialized whole (T4 memory).
 - `coldcap/hw.py` — per-device capabilities. GPU 0 and GPU 1 may be different cards: never assume
   they match; each side picks its own dtype.

@@ -18,7 +18,7 @@ question, and a controller tunes the length pressure to stay within the test's b
 | [IDEA.md](IDEA.md) | motivation, method, results |
 | [TASK.md](TASK.md) | the original task description and rules |
 | `coldcap/porridge.py` | the algorithm: hot / cold / icy filter, rewards, early ejection, controller |
-| `coldcap/rollout.py` | answer generation: vLLM in its own process on its own GPU, HF fallback |
+| `coldcap/rollout.py` | answer generation: one vLLM process per GPU, HF fallback |
 | `coldcap/policy.py` | Qwen3-0.6B + LoRA, memory-light GRPO loss |
 | `coldcap/hw.py` | per-GPU capabilities (bf16, vLLM); GPUs may differ |
 | `train_coldcap.py` | the training loop, checkpoints, `--resume` |
@@ -39,7 +39,7 @@ uv pip install -r requirements.txt
 python utils/train/prepare_data.py     # training data: GSM8K, Skywork easy, CommonsenseQA, ARC Easy
 python utils/eval/benchmarks.py        # evaluation questions
 
-python train_coldcap.py --out outputs/run1                  # GPU 0 trains, GPU 1 generates
+python train_coldcap.py --out outputs/run1                  # both GPUs generate, GPU 0 trains
 python train_coldcap.py --out outputs/run1 --resume         # continue after a disconnect
 
 CUDA_VISIBLE_DEVICES=0 python eval_pair.py --adapter outputs/run1/ckpt-00200 --out runs/run1 --smoke

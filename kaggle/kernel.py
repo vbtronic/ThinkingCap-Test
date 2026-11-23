@@ -5,7 +5,7 @@
 Pushed by kaggle/push.py, which fills in MODE and COMMIT below. Everything worth keeping
 lands in /kaggle/working (the kernel's Output); the clone, data and caches stay in /tmp.
 
-    smoke   a few steps on a few prompts + the smoke evaluation: checks every moving part
+    smoke   a few real-sized steps: checks every moving part and times a step
     train   the real training run (resumes from RESUME_FROM if given)
     eval    scores CHECKPOINT and the base model on the same card (eval_pair.py)
     bench   rollout tokens/s per attention backend, base vs LoRA, and one trainer step
@@ -92,12 +92,11 @@ if RESUME_FROM and not out.exists():
     sh("resume-copy", f"mkdir -p {out.parent} && cp -r {RESUME_FROM} {out}")
 
 if MODE == "smoke":
-    sh("train", f"{sys.executable} train_coldcap.py --out {out} --resume --steps 4 --eval-every 2 "
-                f"--prompts-per-step 4 --group 4 --pool-chunk 8 --max-rounds 2 "
+    # Real group size and pool, few steps: every part working, and how long a step takes.
+    # The evaluation pipeline has its own mode (eval).
+    sh("train", f"{sys.executable} train_coldcap.py --out {out} --resume --steps 3 --eval-every 3 "
+                f"--prompts-per-step 8 --group 6 --pool-chunk 16 --max-rounds 2 "
                 f"--val-per-source 10 --val-samples 1 {EXTRA}")
-    sh("eval-smoke", f"{sys.executable} eval_pair.py --adapter {out}/latest --out {WORK}/runs/smoke "
-                     f"--base-root {WORK}/runs/base --smoke",
-       env={"CUDA_VISIBLE_DEVICES": "0"}, required=False)
 elif MODE == "train":
     sh("train", f"{sys.executable} train_coldcap.py --out {out} --resume {EXTRA}")
 elif MODE == "bench":

@@ -57,9 +57,16 @@ class VLLMEngine:
 
     def generate(self, requests, adapter=None):
         """adapter: a directory saved by peft, or None for the base model."""
+        self.submit(requests, adapter)
+        return self.collect()
+
+    def submit(self, requests, adapter=None):
+        """Start generating without waiting, so several engines can work at once."""
         if adapter is not None:
             self.adapter_id += 1
         self.conn.send(("generate", requests, adapter, self.adapter_id))
+
+    def collect(self):
         kind, payload = self.conn.recv()
         if kind != "done":
             raise RuntimeError(f"vLLM worker failed:\n{payload}")
@@ -124,6 +131,36 @@ def serve(conn, config):
             conn.send(("done", results))
         except Exception:
             conn.send(("error", traceback.format_exc()))
+
+
+class EnginePool:
+    """Several VLLMEngines (one per GPU) behind the one-engine interface.
+
+    Requests are split into contiguous slices, one per engine, so a given request list always
+    sends request i to the same card: validating the base and the policy with the same
+    questions and seeds stays a like-for-like comparison.
+    """
+
+    def __init__(self, engines):
+        self.engines = engines
+        gpus = [e.info["gpu"] for e in engines]
+        dtypes = sorted({e.info["dtype"] for e in engines})
+        self.info = {"gpu": " + ".join(gpus), "dtype": " + ".join(dtypes)}
+
+    def generate(self, requests, adapter=None):
+        size = -(-len(requests) // len(self.engines))
+        slices = [requests[k * size:(k + 1) * size] for k in range(len(self.engines))]
+        busy = [engine for engine, chunk in zip(self.engines, slices) if chunk]
+        for engine, chunk in zip(busy, slices):
+            engine.submit(chunk, adapter)
+        results = []
+        for engine in busy:
+            results.extend(engine.collect())
+        return results
+
+    def close(self):
+        for engine in self.engines:
+            engine.close()
 
 
 class HFEngine:

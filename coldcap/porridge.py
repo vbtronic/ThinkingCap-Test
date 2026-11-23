@@ -45,7 +45,8 @@ class PorridgeConfig:
     recheck: float = 0.10        # chance to re-test a prompt known to be hot or icy
     eject_factor: float = 2.0    # cap a known prompt's generation at this x its L_min
     min_cap: int = 256           # never cap a generation below this
-    max_cap: int = 2048          # and never above this
+    max_cap: int = 4096          # and never above this: the evaluation's own cap, so a
+                                 # long but correct answer is not mistaken for a wrong one
 
 
 @dataclass
