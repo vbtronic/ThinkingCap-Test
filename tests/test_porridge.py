@@ -51,6 +51,16 @@ class EarlyEjection(unittest.TestCase):
         self.assertFalse(memory.worth_generating(3))
         self.assertTrue(memory.worth_generating(4))
 
+    def test_replay_returns_cold_prompts_least_recent_first(self):
+        memory = Memory(PorridgeConfig())
+        memory.update(1, [1, 1, 1, 1], [100, 400, 300, 200], step=5)   # cold
+        memory.update(2, [1, 1, 1, 1], [100, 400, 300, 200], step=2)   # cold, older
+        memory.update(3, [0, 0, 0, 1], [900] * 4, step=1)              # hot
+        memory.update(4, [1, 1, 1, 1], [100, 101, 102, 103], step=0)   # icy
+        self.assertEqual(memory.replay(5), [2, 1])
+        self.assertEqual(memory.replay(1), [2])
+        self.assertEqual(memory.replay(5, exclude={2}), [1])
+
     def test_state_round_trips(self):
         memory = Memory(PorridgeConfig())
         memory.update(1, [1, 1], [10, 30], step=2)

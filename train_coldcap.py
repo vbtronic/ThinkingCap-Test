@@ -167,7 +167,7 @@ def main():
         requests = [{"ids": ids, "max_tokens": porridge.max_cap, "seed": 10_000 + i * 16 + s}
                     for i, ids in enumerate(val_ids) for s in range(arguments.val_samples)]
         rows = [row for row in val_rows for _ in range(arguments.val_samples)]
-        results = engine.generate(requests, adapter)
+        results = engine.generate(requests, adapter, fixed=True)
         correct = grade(rows, results)
         tokens = [len(r["tokens"]) for r in results]
         per_source = {}
@@ -192,13 +192,17 @@ def main():
                 shutil.rmtree(old, ignore_errors=True)
         return str(target)
 
+    deadline = time.time() + arguments.hours * 3600 if arguments.hours else None
+    validation_seconds = 0.0
     if baseline is None:
         print("validating the base model ...", flush=True)
+        deadline_started = time.time()
         if backend == "hf":
             with model.disable_adapter():
                 baseline = validate(None)
         else:
             baseline = validate(None)
+        validation_seconds = time.time() - deadline_started
         print(f"base: accuracy {baseline['accuracy']:.3f}, tokens {baseline['tokens']:.0f}")
         (out / "baseline.json").write_text(json.dumps(baseline, indent=2))
 
@@ -207,14 +211,21 @@ def main():
     while step < arguments.steps:
         started = time.time()
         groups, stats = [], {"generated": 0, "generated_tokens": 0, "skipped": 0,
-                             HOT: 0, COLD: 0, ICY: 0, "generate_s": 0.0}
+                             HOT: 0, COLD: 0, ICY: 0, "generate_s": 0.0,
+                             "replayed": 0}
+        used = set()             # a prompt is generated at most once per step
         for _ in range(arguments.max_rounds):
             if len(groups) >= arguments.prompts_per_step:
                 break
-            batch = []
+            # Part of the pool replays prompts already known to be cold (capped, cheap, nearly
+            # always useful); the rest explores prompts not seen yet.
+            batch = memory.replay(round(porridge.replay * arguments.pool_chunk), exclude=used)
+            stats["replayed"] += len(batch)
             while len(batch) < arguments.pool_chunk:
                 index = order[cursor % len(order)]
                 cursor += 1
+                if index in batch or index in used:
+                    continue
                 if memory.worth_generating(index):
                     batch.append(index)
                 else:
@@ -222,6 +233,7 @@ def main():
             requests = [{"ids": encode(train_rows[i]), "max_tokens": memory.cap(i),
                          "seed": rng.randrange(2**31)}
                         for i in batch for _ in range(arguments.group)]
+            used.update(batch)
             generating = time.time()
             results = engine.generate(requests, adapter)
             stats["generate_s"] += time.time() - generating
@@ -234,7 +246,7 @@ def main():
                 lengths = [len(r["tokens"]) for r in group]
                 kind = memory.update(index, correct, lengths, step)
                 stats[kind] += 1
-                if kind != COLD or len(groups) >= arguments.prompts_per_step:
+                if kind != COLD:     # every cold group is used, even past --prompts-per-step
                     continue
                 earned = rewards(correct, lengths, controller.alpha, controller.beta,
                                  memory.get(index).l_min)
@@ -254,16 +266,24 @@ def main():
         log.write(json.dumps(record) + "\n")
         log.flush()
         print(f"step {step}: cold {len(groups)}  hot {stats[HOT]}  icy {stats[ICY]}  "
-              f"skipped {stats['skipped']}  mean len "
+              f"skipped {stats['skipped']}  replayed {stats['replayed']}  mean len "
               f"{stats['generated_tokens'] / max(stats['generated'], 1):.0f}  "
               f"loss {update['loss']:.4f}  {record['seconds']}s "
               f"(generate {stats['generate_s']}s, train {stats['train_s']}s)", flush=True)
 
-        if step % arguments.eval_every == 0 or step == arguments.steps:
+        # Kaggle kills a session at 12 h and keeps no output then: stop in time, with room for
+        # one more step and a validation, and leave a checkpoint to --resume from.
+        out_of_time = bool(deadline) and (
+            time.time() + 2 * record["seconds"] + 2 * validation_seconds > deadline)
+        if out_of_time:
+            print(f"stopping at step {step}: --hours {arguments.hours} nearly used", flush=True)
+        if step % arguments.eval_every == 0 or step == arguments.steps or out_of_time:
+            validating = time.time()
             if backend == "hf":
                 current = validate(None)
             else:
                 current = validate(adapter)
+            validation_seconds = max(validation_seconds, time.time() - validating)
             decision = controller.observe(step, baseline["accuracy"], baseline["tokens"],
                                           current["accuracy"], current["tokens"])
             print(f"  val: accuracy {current['accuracy']:.3f} (base {baseline['accuracy']:.3f}), "
@@ -275,6 +295,8 @@ def main():
             (checkpoint / "metrics.json").write_text(json.dumps(
                 {"validation": current, "baseline": baseline, "controller": decision}, indent=2))
             save_state(out, model, trainer, torch, step, cursor, baseline, memory, controller, rng)
+        if out_of_time:
+            break
 
     log.close()
     engine.close()
@@ -355,7 +377,8 @@ def parse_arguments():
                    help="vLLM's share of the training card when it generates there too")
     # optimisation
     p.add_argument("--steps", type=int, default=200)
-    p.add_argument("--prompts-per-step", type=int, default=16, help="Cold groups trained per step")
+    p.add_argument("--hours", type=float, help="Stop cleanly (validated, checkpointed) within this many hours")
+    p.add_argument("--prompts-per-step", type=int, default=16, help="Generate until at least this many cold groups")
     p.add_argument("--group", type=int, default=6, help="Rollouts per prompt (G)")
     p.add_argument("--pool-chunk", type=int, default=32, help="Prompts generated per round")
     p.add_argument("--max-rounds", type=int, default=4, help="Rounds per step to find cold prompts")
@@ -378,6 +401,7 @@ def parse_arguments():
     p.add_argument("--eject-factor", type=float)
     p.add_argument("--min-cap", type=int)
     p.add_argument("--max-cap", type=int)
+    p.add_argument("--replay", type=float, help="Share of each pool replaying known cold prompts")
     # controller
     p.add_argument("--alpha", type=float)
     p.add_argument("--beta", type=float)

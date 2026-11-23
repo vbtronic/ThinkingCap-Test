@@ -21,6 +21,7 @@ same distribution of answers that will be scored.
 import atexit
 import multiprocessing as mp
 import os
+import time
 import traceback
 
 SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
@@ -54,9 +55,11 @@ class VLLMEngine:
             raise RuntimeError(f"vLLM worker failed to start:\n{payload}")
         self.info = payload   # {"gpu": ..., "dtype": ...} of the card it actually got
         self.adapter_id = 0
+        self.speed = None     # generated tokens per second in the last call
 
-    def generate(self, requests, adapter=None):
-        """adapter: a directory saved by peft, or None for the base model."""
+    def generate(self, requests, adapter=None, fixed=False):
+        """adapter: a directory saved by peft, or None for the base model. `fixed` only
+        matters to a pool."""
         self.submit(requests, adapter)
         return self.collect()
 
@@ -70,7 +73,10 @@ class VLLMEngine:
         kind, payload = self.conn.recv()
         if kind != "done":
             raise RuntimeError(f"vLLM worker failed:\n{payload}")
-        return payload
+        tokens = sum(len(r["tokens"]) for r in payload["results"])
+        if tokens and payload["seconds"] > 0:
+            self.speed = tokens / payload["seconds"]
+        return payload["results"]
 
     def close(self):
         """Stop the worker; idempotent. Python joins non-daemon children at exit, so a
@@ -121,14 +127,16 @@ def serve(conn, config):
             params = [SamplingParams(max_tokens=r["max_tokens"], seed=r["seed"],
                                      stop_token_ids=config["eos_ids"], **SAMPLING)
                       for r in requests]
+            started = time.time()
             outputs = llm.generate([{"prompt_token_ids": r["ids"]} for r in requests], params,
                                    lora_request=lora, use_tqdm=False)
+            seconds = time.time() - started
             results = []
             for output in outputs:
                 tokens = list(output.outputs[0].token_ids)
                 results.append({"tokens": tokens,
                                 "finished": bool(tokens) and tokens[-1] in config["eos_ids"]})
-            conn.send(("done", results))
+            conn.send(("done", {"results": results, "seconds": seconds}))
         except Exception:
             conn.send(("error", traceback.format_exc()))
 
@@ -136,9 +144,11 @@ def serve(conn, config):
 class EnginePool:
     """Several VLLMEngines (one per GPU) behind the one-engine interface.
 
-    Requests are split into contiguous slices, one per engine, so a given request list always
-    sends request i to the same card: validating the base and the policy with the same
-    questions and seeds stays a like-for-like comparison.
+    Requests are split into contiguous slices, one per engine. For training the slices follow
+    each engine's measured speed, so both cards finish together (the one shared with the
+    trainer has less KV-cache memory and runs fewer sequences at once). With fixed=True the
+    split is even and depends only on the request count, so validation always sends request
+    i to the same card: base and policy are compared like for like.
     """
 
     def __init__(self, engines):
@@ -147,9 +157,19 @@ class EnginePool:
         dtypes = sorted({e.info["dtype"] for e in engines})
         self.info = {"gpu": " + ".join(gpus), "dtype": " + ".join(dtypes)}
 
-    def generate(self, requests, adapter=None):
-        size = -(-len(requests) // len(self.engines))
-        slices = [requests[k * size:(k + 1) * size] for k in range(len(self.engines))]
+    def shares(self, fixed):
+        speeds = [e.speed for e in self.engines]
+        if fixed or None in speeds:
+            return [1.0 / len(self.engines)] * len(self.engines)
+        return [v / sum(speeds) for v in speeds]
+
+    def generate(self, requests, adapter=None, fixed=False):
+        bounds, total = [0], 0.0
+        for share in self.shares(fixed):
+            total += share
+            bounds.append(round(total * len(requests)))
+        bounds[-1] = len(requests)
+        slices = [requests[a:b] for a, b in zip(bounds, bounds[1:])]
         busy = [engine for engine, chunk in zip(self.engines, slices) if chunk]
         for engine, chunk in zip(busy, slices):
             engine.submit(chunk, adapter)
@@ -177,7 +197,7 @@ class HFEngine:
         self.info = {"gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu",
                      "dtype": str(next(model.parameters()).dtype).replace("torch.", "")}
 
-    def generate(self, requests, adapter=None):
+    def generate(self, requests, adapter=None, fixed=False):
         torch = self.torch
         device = next(self.model.parameters()).device
         was_training = self.model.training

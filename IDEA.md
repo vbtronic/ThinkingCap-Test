@@ -62,6 +62,12 @@ Advantages are group-relative (GRPO), loss is token-normalised, one on-policy up
   could not earn a positive advantage anyway;
 - **before backward**: sequences with zero advantage are dropped.
 
+Cold prompts are also **replayed**: half of every generation pool returns to prompts already
+known to be cold (least recently seen first). They are capped at `2 × L_min`, so they are
+cheap, and almost every one of them yields a useful group. A prompt keeps coming back until
+the model answers it tightly every time — it turns icy and drops out on its own. The other
+half explores prompts not seen yet, to find new cold ones.
+
 ### 4. Adaptive controller
 
 Every 20 steps the same 200 validation questions (held out from the training sets, fixed seeds)

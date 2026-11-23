@@ -28,7 +28,9 @@ Three parts:
 
 Plus the memory that makes early ejection possible: prompts already known to be hot or icy
 are skipped before any token is generated, and a known prompt's generation is capped at
-`eject_factor` x its shortest correct length.
+`eject_factor` x its shortest correct length. Known cold prompts are also *replayed*: part of
+every pool comes back to them, so most generation goes to prompts that are cheap (capped)
+and almost sure to teach something, until they freeze into icy and drop out by themselves.
 """
 
 from dataclasses import dataclass, field, asdict
@@ -47,6 +49,7 @@ class PorridgeConfig:
     min_cap: int = 256           # never cap a generation below this
     max_cap: int = 4096          # and never above this: the evaluation's own cap, so a
                                  # long but correct answer is not mistaken for a wrong one
+    replay: float = 0.5          # share of each pool drawn from prompts known to be cold
 
 
 @dataclass
@@ -75,6 +78,13 @@ class Memory:
         if known is None or known.temperature in (UNKNOWN, COLD):
             return True
         return self.rng.random() < self.config.recheck
+
+    def replay(self, count, exclude=()):
+        """Up to `count` prompts known to be cold, least recently generated first."""
+        cold = [(m.step, self.rng.random(), i) for i, m in self.prompts.items()
+                if m.temperature == COLD and i not in exclude]
+        cold.sort()
+        return [i for _, _, i in cold[:count]]
 
     def cap(self, index):
         """Early ejection, part 2: how many tokens this prompt may generate."""
