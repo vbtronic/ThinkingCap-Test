@@ -196,7 +196,7 @@ def main():
     while step < arguments.steps:
         started = time.time()
         groups, stats = [], {"generated": 0, "generated_tokens": 0, "skipped": 0,
-                             HOT: 0, COLD: 0, ICY: 0}
+                             HOT: 0, COLD: 0, ICY: 0, "generate_s": 0.0}
         for _ in range(arguments.max_rounds):
             if len(groups) >= arguments.prompts_per_step:
                 break
@@ -211,7 +211,9 @@ def main():
             requests = [{"ids": encode(train_rows[i]), "max_tokens": memory.cap(i),
                          "seed": rng.randrange(2**31)}
                         for i in batch for _ in range(arguments.group)]
+            generating = time.time()
             results = engine.generate(requests, adapter)
+            stats["generate_s"] += time.time() - generating
             stats["generated"] += len(results)
             stats["generated_tokens"] += sum(len(r["tokens"]) for r in results)
             for k, index in enumerate(batch):
@@ -228,7 +230,11 @@ def main():
                 scores = advantages(earned, scale=not arguments.no_std)
                 groups.append([{"prompt": prompt, "completion": r["tokens"], "advantage": a}
                                for r, a in zip(group, scores)])
+        training = time.time()
         update = trainer.step([s for g in groups for s in g])
+        stats["train_s"] = time.time() - training
+        stats["generate_s"] = round(stats["generate_s"], 1)
+        stats["train_s"] = round(stats["train_s"], 1)
         step += 1
         adapter = sync()
         record = {"step": step, "seconds": round(time.time() - started, 1),
@@ -239,7 +245,8 @@ def main():
         print(f"step {step}: cold {len(groups)}  hot {stats[HOT]}  icy {stats[ICY]}  "
               f"skipped {stats['skipped']}  mean len "
               f"{stats['generated_tokens'] / max(stats['generated'], 1):.0f}  "
-              f"loss {update['loss']:.4f}  {record['seconds']}s", flush=True)
+              f"loss {update['loss']:.4f}  {record['seconds']}s "
+              f"(generate {stats['generate_s']}s, train {stats['train_s']}s)", flush=True)
 
         if step % arguments.eval_every == 0 or step == arguments.steps:
             if backend == "hf":

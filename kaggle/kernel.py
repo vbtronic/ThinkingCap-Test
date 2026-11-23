@@ -8,6 +8,7 @@ lands in /kaggle/working (the kernel's Output); the clone, data and caches stay 
     smoke   a few steps on a few prompts + the smoke evaluation: checks every moving part
     train   the real training run (resumes from RESUME_FROM if given)
     eval    scores CHECKPOINT and the base model on the same card (eval_pair.py)
+    bench   rollout tokens/s per attention backend, base vs LoRA, and one trainer step
 """
 
 import os
@@ -30,9 +31,20 @@ CHECKPOINT = ""       # for MODE=eval, relative to /kaggle/working or absolute
 # and the candidate run the same kernels.
 os.environ.setdefault("VLLM_ATTENTION_BACKEND", "TRITON_ATTN")
 os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
-STUBS = "/usr/local/cuda/lib64/stubs"
-if os.path.isdir(STUBS):
-    os.environ["LIBRARY_PATH"] = ":".join(filter(None, [os.environ.get("LIBRARY_PATH"), STUBS]))
+# FlashInfer's JIT links with -lcuda, but the image only has the driver's libcuda.so.1 (no
+# unversioned name). A symlink in a directory on LIBRARY_PATH makes FlashInfer buildable, so
+# MODE=bench can compare it with Triton.
+LINKS = Path("/tmp/cudalink")
+for found in ("/usr/lib/x86_64-linux-gnu/libcuda.so.1", "/usr/local/nvidia/lib64/libcuda.so.1",
+              "/usr/lib64/libcuda.so.1", "/usr/local/cuda/lib64/stubs/libcuda.so"):
+    if os.path.exists(found):
+        LINKS.mkdir(parents=True, exist_ok=True)
+        if not (LINKS / "libcuda.so").exists():
+            (LINKS / "libcuda.so").symlink_to(found)
+        os.environ["LIBRARY_PATH"] = ":".join(filter(None, [os.environ.get("LIBRARY_PATH"),
+                                                            str(LINKS)]))
+        print("libcuda for linking:", found, flush=True)
+        break
 
 WORK = Path("/kaggle/working")
 SRC = Path("/tmp/coldcap")
@@ -88,6 +100,8 @@ if MODE == "smoke":
        env={"CUDA_VISIBLE_DEVICES": "0"}, required=False)
 elif MODE == "train":
     sh("train", f"{sys.executable} train_coldcap.py --out {out} --resume {EXTRA}")
+elif MODE == "bench":
+    sh("bench", f"{sys.executable} kaggle/bench.py --out {WORK}/bench.json {EXTRA}")
 elif MODE == "eval":
     checkpoint = CHECKPOINT if CHECKPOINT.startswith("/") else str(WORK / CHECKPOINT)
     sh("eval", f"{sys.executable} eval_pair.py --adapter {checkpoint} --out {WORK}/runs/eval "

@@ -5,6 +5,7 @@
 
     python kaggle/push.py smoke                         # quick check of every part
     python kaggle/push.py train --extra "--steps 200"
+    python kaggle/push.py bench                         # tokens/s per vLLM attention backend
     python kaggle/push.py eval --checkpoint outputs/run1/ckpt-00200 --source <user>/<kernel>
 
 Needs the Kaggle CLI and a token (~/.kaggle/access_token or KAGGLE_API_TOKEN).
@@ -25,7 +26,7 @@ HERE = Path(__file__).resolve().parent
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("mode", choices=("smoke", "train", "eval"))
+    parser.add_argument("mode", choices=("smoke", "train", "eval", "bench"))
     parser.add_argument("--user", default="viktorbrunclk")
     parser.add_argument("--slug", help="Kernel name (default: coldcap-<mode>)")
     parser.add_argument("--commit", help="Git commit to run (default: local HEAD)")
