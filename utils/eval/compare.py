@@ -244,7 +244,8 @@ def hardware_of(meta):
 
 def setup_of(hardware):
     """The part of the hardware that changes what gets generated."""
-    return (hardware.get("gpu"), hardware.get("dtype"))
+    return (hardware.get("gpu"), hardware.get("dtype"),
+            hardware.get("attention_backend", "auto"))
 
 
 def same_setup(base, candidate):
@@ -268,8 +269,8 @@ def hardware_note(comparison):
         return ""
     calibration = (comparison["base"]["model"] == comparison["candidate"]["model"]
                    and comparison["base"]["adapter"] == comparison["candidate"]["adapter"])
-    setups = (f"{before.get('gpu')} {before.get('dtype')} vs "
-              f"{after.get('gpu')} {after.get('dtype')}")
+    setups = " vs ".join(" ".join(str(part) for part in setup_of(side))
+                         for side in (before, after))
     if calibration:
         return (f"\nA/A CALIBRATION: the same checkpoint on two setups ({setups}).\n"
                 "Everything above is the effect of the hardware alone. Expect intervals that\n"

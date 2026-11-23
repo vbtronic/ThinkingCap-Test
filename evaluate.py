@@ -355,6 +355,7 @@ def hardware(arguments):
     name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
     return {"gpu": name, "dtype": arguments.dtype, "vllm": vllm.__version__,
             "torch": torch.__version__,
+            "attention_backend": os.environ.get("VLLM_ATTENTION_BACKEND", "auto"),
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")}
 
 

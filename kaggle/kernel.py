@@ -23,6 +23,16 @@ EXTRA = ""            # extra flags for train_coldcap.py / eval_pair.py
 RESUME_FROM = ""      # e.g. /kaggle/input/<kernel-output>/outputs/run1
 CHECKPOINT = ""       # for MODE=eval, relative to /kaggle/working or absolute
 
+# vLLM on a T4 picks FlashInfer attention, which JIT-compiles CUDA code at start-up and fails
+# to link on Kaggle ("cannot find -lcuda"). Triton attention needs no compiler. The stub
+# directory is a fallback in case a vLLM version ignores the variable. Both apply to
+# training *and* evaluation, so the baseline and the candidate run the same kernels.
+os.environ.setdefault("VLLM_ATTENTION_BACKEND", "TRITON_ATTN")
+os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+STUBS = "/usr/local/cuda/lib64/stubs"
+if os.path.isdir(STUBS):
+    os.environ["LIBRARY_PATH"] = ":".join(filter(None, [os.environ.get("LIBRARY_PATH"), STUBS]))
+
 WORK = Path("/kaggle/working")
 SRC = Path("/tmp/coldcap")
 LOGS = WORK / "logs"
