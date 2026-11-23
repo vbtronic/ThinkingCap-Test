@@ -132,7 +132,7 @@ def finished(run):
 def check_cached(base, gpu, dtype):
     """A cached baseline must really come from this setup; the name alone is not proof."""
     hardware = json.loads((base / "results.json").read_text()).get("hardware") or {}
-    backend = os.environ.get("VLLM_ATTENTION_BACKEND", "auto")
+    backend = os.environ.get("VLLM_ATTENTION_BACKEND") or "auto"
     cached = (hardware.get("gpu"), hardware.get("dtype"), hardware.get("attention_backend", "auto"))
     if cached != (gpu, dtype, backend):
         raise SystemExit(f"{base} was scored on {' '.join(map(str, cached))}, not "

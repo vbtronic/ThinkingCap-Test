@@ -24,9 +24,10 @@ RESUME_FROM = ""      # e.g. /kaggle/input/<kernel-output>/outputs/run1
 CHECKPOINT = ""       # for MODE=eval, relative to /kaggle/working or absolute
 
 # vLLM on a T4 picks FlashInfer attention, which JIT-compiles CUDA code at start-up and fails
-# to link on Kaggle ("cannot find -lcuda"). Triton attention needs no compiler. The stub
-# directory is a fallback in case a vLLM version ignores the variable. Both apply to
-# training *and* evaluation, so the baseline and the candidate run the same kernels.
+# to link on Kaggle ("cannot find -lcuda"). Triton attention needs no compiler. vLLM 0.23 no
+# longer reads the variable, so coldcap.hw.vllm_attention() passes it to every LLM(...); the
+# stub directory is a last resort. It applies to training *and* evaluation, so the baseline
+# and the candidate run the same kernels.
 os.environ.setdefault("VLLM_ATTENTION_BACKEND", "TRITON_ATTN")
 os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
 STUBS = "/usr/local/cuda/lib64/stubs"

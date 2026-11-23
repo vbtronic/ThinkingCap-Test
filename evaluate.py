@@ -315,6 +315,7 @@ def load_engine(arguments, longest_generation):
     os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
     from vllm import LLM
     from vllm.lora.request import LoRARequest
+    from coldcap.hw import vllm_attention
 
     arguments.dtype = resolve_dtype(arguments.dtype)
     rank = None
@@ -326,7 +327,7 @@ def load_engine(arguments, longest_generation):
                 gpu_memory_utilization=0.85,
                 dtype=arguments.dtype,
                 enable_prefix_caching=False, generation_config="vllm", seed=arguments.seed,
-                enable_lora=rank is not None, max_lora_rank=rank or 16)
+                enable_lora=rank is not None, max_lora_rank=rank or 16, **vllm_attention())
     if not arguments.adapter:
         return model, None
     lora = LoRARequest("candidate", 1, str(Path(arguments.adapter).resolve()))
@@ -355,7 +356,7 @@ def hardware(arguments):
     name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
     return {"gpu": name, "dtype": arguments.dtype, "vllm": vllm.__version__,
             "torch": torch.__version__,
-            "attention_backend": os.environ.get("VLLM_ATTENTION_BACKEND", "auto"),
+            "attention_backend": os.environ.get("VLLM_ATTENTION_BACKEND") or "auto",
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")}
 
 

@@ -8,13 +8,18 @@
 
 Nothing here assumes the devices are alike. The trainer and the rollout engine each pick
 their own precision for the card they run on, and every run records which card and which
-precision produced it, so a comparison can refuse to pair runs that differ.
+precision produced it, so a comparison can say when runs come from different setups.
 """
+
+import os
 
 import torch
 
 # vLLM needs compute capability 7.0 (Volta) or newer; a P100 is 6.0.
 VLLM_MIN_CAPABILITY = (7, 0)
+# vLLM's attention kernels, chosen by the caller (VLLM_ATTENTION_BACKEND, "auto" = vLLM picks).
+# vLLM 0.23 no longer reads that variable itself, so engines pass it on as an argument.
+ATTENTION_ENV = "VLLM_ATTENTION_BACKEND"
 # Native bf16 arrived with Ampere (8.0). Older cards emulate it slowly or not at all.
 BF16_MIN_CAPABILITY = (8, 0)
 
@@ -63,3 +68,14 @@ def report():
 
 if __name__ == "__main__":
     print(report())
+
+
+def attention_backend():
+    """The attention backend the user asked for, "auto" when vLLM should choose."""
+    return os.environ.get(ATTENTION_ENV) or "auto"
+
+
+def vllm_attention():
+    """Keyword arguments for vllm.LLM that pin the attention backend (empty for "auto")."""
+    backend = attention_backend()
+    return {} if backend == "auto" else {"attention_backend": backend}

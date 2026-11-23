@@ -87,7 +87,7 @@ def serve(conn, config):
         import torch
         from vllm import LLM, SamplingParams
         from vllm.lora.request import LoRARequest
-        from coldcap.hw import best_dtype
+        from coldcap.hw import best_dtype, vllm_attention
 
         dtype = best_dtype(0) if config["dtype"] == "auto" else config["dtype"]
         llm = LLM(model=config["model"], revision=config["revision"],
@@ -95,7 +95,8 @@ def serve(conn, config):
                   max_model_len=config["max_model_len"],
                   gpu_memory_utilization=config["memory"], seed=config["seed"],
                   enable_lora=True, max_lora_rank=config["lora_rank"], max_loras=1,
-                  max_cpu_loras=2, enable_prefix_caching=True, generation_config="vllm")
+                  max_cpu_loras=2, enable_prefix_caching=True, generation_config="vllm",
+                  **vllm_attention())
         conn.send(("ready", {"gpu": torch.cuda.get_device_name(0), "dtype": dtype}))
     except Exception:
         conn.send(("error", traceback.format_exc()))
