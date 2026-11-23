@@ -41,7 +41,9 @@ from coldcap.porridge import (COLD, HOT, ICY, Controller, ControllerConfig, Memo
 
 BASE_MODEL = "Qwen/Qwen3-0.6B"
 BASE_REVISION = "c1899de289a04d12100db370d81485cdf75e47ca"   # the one evaluate.py pins
-PROMPT_BUDGET = 1024
+# Longest prompt we accept; the Skywork maths prompts are the long ones. Longer rows are
+# dropped, never truncated, so a prompt is always asked whole.
+PROMPT_BUDGET = 1536
 
 
 def main():
@@ -81,8 +83,25 @@ def main():
         wanted = set(arguments.sources.split(","))
         train_rows = [r for r in train_rows if r["source"] in wanted]
         val_rows = [r for r in val_rows if r["source"] in wanted]
-    encode = lambda row: tokenizer.apply_chat_template(  # noqa: E731
-        row["prompt"], tokenize=True, add_generation_prompt=True, enable_thinking=True)
+    def tokenize(row):
+        return tokenizer.apply_chat_template(row["prompt"], tokenize=True,
+                                             add_generation_prompt=True, enable_thinking=True)
+
+    def fits(rows, name):
+        kept = [r for r in rows if len(tokenize(r)) <= PROMPT_BUDGET]
+        if len(kept) < len(rows):
+            print(f"{name}: dropped {len(rows) - len(kept)} prompts over {PROMPT_BUDGET} tokens")
+        return kept
+
+    train_rows, val_rows = fits(train_rows, "train"), fits(val_rows, "val")
+    cache = {}
+
+    def encode(row):
+        key = id(row)
+        if key not in cache:
+            cache[key] = tokenize(row)
+        return cache[key]
+
     val_ids = [encode(r) for r in val_rows]
 
     porridge = PorridgeConfig(**pick(arguments, PorridgeConfig))

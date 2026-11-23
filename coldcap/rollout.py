@@ -18,6 +18,7 @@ Sampling is the evaluation's (temperature 0.6, top-p 0.95, top-k 20): we train o
 same distribution of answers that will be scored.
 """
 
+import atexit
 import multiprocessing as mp
 import os
 import traceback
@@ -38,13 +39,16 @@ class VLLMEngine:
         visible = saved.split(",") if saved else None
         os.environ["CUDA_VISIBLE_DEVICES"] = visible[device] if visible else str(device)
         try:
-            self.process = context.Process(target=serve, args=(child, config), daemon=True)
+            # Not a daemon: vLLM starts its own engine-core process, and daemonic processes
+            # may not have children. close() (also registered with atexit) shuts it down.
+            self.process = context.Process(target=serve, args=(child, config))
             self.process.start()
         finally:
             if saved is None:
                 os.environ.pop("CUDA_VISIBLE_DEVICES", None)
             else:
                 os.environ["CUDA_VISIBLE_DEVICES"] = saved
+        atexit.register(self.close)
         kind, payload = self.conn.recv()
         if kind != "ready":
             raise RuntimeError(f"vLLM worker failed to start:\n{payload}")
@@ -62,11 +66,18 @@ class VLLMEngine:
         return payload
 
     def close(self):
+        """Stop the worker; idempotent. Python joins non-daemon children at exit, so a
+        worker left waiting on the pipe would hang the trainer forever."""
+        if not self.process.is_alive():
+            return
         try:
             self.conn.send(("stop", None, None, None))
         except (BrokenPipeError, OSError):
             pass
-        self.process.join(timeout=30)
+        self.process.join(timeout=60)
+        if self.process.is_alive():
+            self.process.terminate()
+            self.process.join(timeout=10)
 
 
 def serve(conn, config):
@@ -91,7 +102,10 @@ def serve(conn, config):
         return
 
     while True:
-        kind, requests, adapter, adapter_id = conn.recv()
+        try:
+            kind, requests, adapter, adapter_id = conn.recv()
+        except EOFError:          # the trainer is gone
+            return
         if kind == "stop":
             return
         try:
