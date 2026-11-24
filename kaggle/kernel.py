@@ -13,6 +13,7 @@ lands in /kaggle/working (the kernel's Output); the clone, data and caches stay 
 
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ REPO = "https://github.com/vbtronic/ThinkingCap-Test.git"
 EXTRA = ""            # extra flags for train_coldcap.py / eval_pair.py
 RESUME_FROM = ""      # e.g. /kaggle/input/<kernel-output>/outputs/run1
 CHECKPOINT = ""       # for MODE=eval: ckpt names under /kaggle/input, comma-separated
+BUDGET_H = ""         # GPU quota left (hours): stop, checkpoint and save before it runs out
 
 # vLLM on a T4 picks FlashInfer attention, which JIT-compiles CUDA code at start-up and fails
 # to link on Kaggle ("cannot find -lcuda"). Triton attention needs no compiler. vLLM 0.23 no
@@ -47,7 +49,10 @@ for found in ("/usr/lib/x86_64-linux-gnu/libcuda.so.1", "/usr/local/nvidia/lib64
         break
 
 STARTED = time.time()
-EVAL_START_LIMIT_H = 7.5
+# Kaggle discards a session's output when it hits 12 h or the weekly GPU quota runs out, so
+# every mode stops early enough to write its results. BUDGET_H is the quota left at push time.
+SESSION_H = min(12.0, float(BUDGET_H)) if BUDGET_H else 12.0
+EVAL_START_LIMIT_H = SESSION_H - 4.5   # a full checkpoint eval takes up to ~3 h on a T4
 WORK = Path("/kaggle/working")
 SRC = Path("/tmp/coldcap")
 LOGS = WORK / "logs"
@@ -100,7 +105,12 @@ if MODE == "smoke":
                 f"--prompts-per-step 8 --group 6 --pool-chunk 16 --max-rounds 2 "
                 f"--val-per-source 10 --val-samples 1 {EXTRA}")
 elif MODE == "train":
-    sh("train", f"{sys.executable} train_coldcap.py --out {out} --resume {EXTRA}")
+    # Leave 30 min for the last validation, checkpoint and upload of the output.
+    left = SESSION_H - (time.time() - STARTED) / 3600 - 0.5
+    asked = re.search(r"--hours[ =]([0-9.]+)", EXTRA)
+    hours = min(left, float(asked.group(1))) if asked else left
+    extra = re.sub(r"--hours[ =][0-9.]+", "", EXTRA)
+    sh("train", f"{sys.executable} train_coldcap.py --out {out} --resume --hours {hours:.2f} {extra}")
 elif MODE == "bench":
     sh("bench", f"{sys.executable} kaggle/bench.py --out {WORK}/bench.json {EXTRA}")
 elif MODE == "eval":
@@ -122,8 +132,7 @@ elif MODE == "eval":
                                 cwd=SRC, env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"},
                                 stdout=base_log, stderr=subprocess.STDOUT)
         for name, path in checkpoints:
-            # Kaggle discards everything when a session hits 12 h: never start a checkpoint
-            # that could push past it (a full one takes up to ~3 h on a T4).
+            # Never start a checkpoint that could push the session past its limit.
             if time.time() - STARTED > EVAL_START_LIMIT_H * 3600:
                 failures.append(f"eval-{name} skipped (time)")
                 print(f"===== eval-{name}: skipped, {EVAL_START_LIMIT_H} h used", flush=True)

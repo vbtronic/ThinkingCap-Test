@@ -6,6 +6,7 @@
     python kaggle/push.py smoke                         # quick check of every part
     python kaggle/push.py train --extra "--steps 200"
     python kaggle/push.py bench                         # tokens/s per vLLM attention backend
+    python kaggle/push.py train --budget-hours 6        # stop + checkpoint before quota ends
     python kaggle/push.py eval --checkpoint ckpt-00020,ckpt-00030 --source <user>/coldcap-train
 
 Needs the Kaggle CLI and a token (~/.kaggle/access_token or KAGGLE_API_TOKEN).
@@ -33,6 +34,8 @@ def main():
     parser.add_argument("--extra", default="", help="Extra flags for the training/eval script")
     parser.add_argument("--resume-from", default="", help="Path under /kaggle/input to resume from")
     parser.add_argument("--checkpoint", default="")
+    parser.add_argument("--budget-hours", default="",
+                        help="Weekly GPU quota left: the kernel stops and saves before it runs out")
     parser.add_argument("--source", action="append", default=[],
                         help="Kernel whose output to attach as input (user/slug), repeatable")
     parser.add_argument("--accelerator", default="NvidiaTeslaT4")
@@ -47,7 +50,8 @@ def main():
     slug = arguments.slug or f"coldcap-{arguments.mode}"
     script = (HERE / "kernel.py").read_text()
     for name, value in (("MODE", arguments.mode), ("COMMIT", commit), ("EXTRA", arguments.extra),
-                        ("RESUME_FROM", arguments.resume_from), ("CHECKPOINT", arguments.checkpoint)):
+                        ("RESUME_FROM", arguments.resume_from), ("CHECKPOINT", arguments.checkpoint),
+                        ("BUDGET_H", arguments.budget_hours)):
         script, count = re.subn(rf'^{name} = ".*?"', f"{name} = {json.dumps(value)}", script,
                                 count=1, flags=re.MULTILINE)
         if count != 1:
