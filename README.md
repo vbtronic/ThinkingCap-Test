@@ -55,7 +55,7 @@ Each validation writes `outputs/run1/ckpt-XXXXX/` (LoRA in `.safetensors` + `met
 ```bash
 python kaggle/push.py smoke                          # checks every moving part in a few minutes
 python kaggle/push.py train --extra "--steps 200"
-python kaggle/push.py eval --checkpoint outputs/run1/ckpt-00200 --source viktorbrunclk/coldcap-train
+python kaggle/push.py eval --checkpoint ckpt-00020,ckpt-00030 --source viktorbrunclk/coldcap-train
 ```
 
 or open `kaggle/coldcap.ipynb` with *Accelerator: GPU T4 x2* and *Internet: On*.

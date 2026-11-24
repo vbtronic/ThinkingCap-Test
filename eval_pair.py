@@ -25,7 +25,8 @@ hardware alone does, compare two cached baselines (an A/A calibration):
     python compare.py runs/base/tesla-t4-float16-full runs/base/nvidia-l4-bfloat16-full
 
 Pick the card with CUDA_VISIBLE_DEVICES; on a box whose GPU 0 and GPU 1 differ,
-each card gets its own baseline.
+each card gets its own baseline. With two cards of the same model, score the baseline on
+one (--base-only) while the other scores candidates (--no-base), then compare (--reuse).
 """
 
 import argparse
@@ -49,9 +50,13 @@ def main():
     if finished(base):
         print(f"Baseline for this setup: {base} (cached)")
         check_cached(base, gpu, dtype)
+    elif arguments.no_base:
+        print(f"No baseline at {base} yet; --no-base: scoring the candidate only", flush=True)
     else:
         print(f"No baseline for this setup yet; scoring the base model into {base}", flush=True)
         evaluate(["--out", str(base)], dtype, passthrough)
+    if arguments.base_only:
+        return
 
     candidate = Path(arguments.out).resolve()
     if finished(candidate) and arguments.reuse:
@@ -64,6 +69,9 @@ def main():
             flags += ["--adapter", str(Path(arguments.adapter).resolve())]
         evaluate(flags, dtype, passthrough)
 
+    if not finished(base):
+        print("No baseline to compare with yet; rerun with --reuse once it is scored")
+        return
     comparison = [sys.executable, str(ROOT / "compare.py"), str(base), str(candidate),
                   "--out", str(candidate / "comparison.json")]
     subprocess.run(comparison, check=True, cwd=ROOT)
@@ -72,7 +80,12 @@ def main():
 def parse_arguments():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--out", required=True, help="Directory for the candidate's run")
+    parser.add_argument("--out", help="Directory for the candidate's run")
+    # Two cards of the same model can split the work: the baseline on one, candidates on the
+    # other (--no-base), then a last call with --reuse only compares.
+    parser.add_argument("--base-only", action="store_true", help="Score (or find) the baseline, stop")
+    parser.add_argument("--no-base", action="store_true",
+                        help="Never score the baseline here; compare only if it is already there")
     parser.add_argument("--adapter", help="LoRA to score on top of the base model")
     parser.add_argument("--model", help="Full weights to score instead of the base model")
     parser.add_argument("--dtype", default="auto", choices=("auto", "bfloat16", "float16"))
@@ -87,8 +100,10 @@ def parse_arguments():
     parser.add_argument("--samples", type=int)
     parser.add_argument("--max-tokens", type=int)
     arguments, rest = parser.parse_known_args()
-    if not arguments.adapter and not arguments.model:
+    if not arguments.base_only and not arguments.adapter and not arguments.model:
         parser.error("give --adapter and/or --model: the base model is the baseline")
+    if not arguments.base_only and not arguments.out:
+        parser.error("--out is required")
     passthrough = rest + ["--dtype", "PLACEHOLDER"]
     for flag, value in (("--smoke", arguments.smoke), ("--benchmarks", arguments.benchmarks),
                         ("--samples", arguments.samples), ("--max-tokens", arguments.max_tokens)):

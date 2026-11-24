@@ -6,7 +6,7 @@
     python kaggle/push.py smoke                         # quick check of every part
     python kaggle/push.py train --extra "--steps 200"
     python kaggle/push.py bench                         # tokens/s per vLLM attention backend
-    python kaggle/push.py eval --checkpoint outputs/run1/ckpt-00200 --source <user>/<kernel>
+    python kaggle/push.py eval --checkpoint ckpt-00020,ckpt-00030 --source <user>/coldcap-train
 
 Needs the Kaggle CLI and a token (~/.kaggle/access_token or KAGGLE_API_TOKEN).
 The kernel clones the repo from GitHub at --commit (default: the local HEAD, which must be pushed).

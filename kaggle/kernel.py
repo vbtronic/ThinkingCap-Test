@@ -7,7 +7,7 @@ lands in /kaggle/working (the kernel's Output); the clone, data and caches stay 
 
     smoke   a few real-sized steps: checks every moving part and times a step
     train   the real training run (resumes from RESUME_FROM if given)
-    eval    scores CHECKPOINT and the base model on the same card (eval_pair.py)
+    eval    scores the base model (GPU 0) and CHECKPOINT(s) (GPU 1, same card model), compares
     bench   rollout tokens/s per attention backend, base vs LoRA, and one trainer step
 """
 
@@ -22,7 +22,7 @@ COMMIT = "main"
 REPO = "https://github.com/vbtronic/ThinkingCap-Test.git"
 EXTRA = ""            # extra flags for train_coldcap.py / eval_pair.py
 RESUME_FROM = ""      # e.g. /kaggle/input/<kernel-output>/outputs/run1
-CHECKPOINT = ""       # for MODE=eval, relative to /kaggle/working or absolute
+CHECKPOINT = ""       # for MODE=eval: ckpt names under /kaggle/input, comma-separated
 
 # vLLM on a T4 picks FlashInfer attention, which JIT-compiles CUDA code at start-up and fails
 # to link on Kaggle ("cannot find -lcuda"). Triton attention needs no compiler. vLLM 0.23 no
@@ -102,9 +102,36 @@ elif MODE == "train":
 elif MODE == "bench":
     sh("bench", f"{sys.executable} kaggle/bench.py --out {WORK}/bench.json {EXTRA}")
 elif MODE == "eval":
-    checkpoint = CHECKPOINT if CHECKPOINT.startswith("/") else str(WORK / CHECKPOINT)
-    sh("eval", f"{sys.executable} eval_pair.py --adapter {checkpoint} --out {WORK}/runs/eval "
-               f"--base-root {WORK}/runs/base {EXTRA}", env={"CUDA_VISIBLE_DEVICES": "0"})
+    # CHECKPOINT: comma-separated checkpoint names (ckpt-00020) found under /kaggle/input
+    # (attach the training kernel with --source) or absolute paths. GPU 0 scores the base
+    # model while GPU 1 scores the checkpoints; then each is compared with the base.
+    checkpoints = []
+    for name in filter(None, CHECKPOINT.split(",")):
+        hits = [Path(name)] if name.startswith("/") else sorted(
+            hit.parent for hit in Path("/kaggle/input").rglob(f"{name}/adapter_model.safetensors"))
+        if not hits:
+            failures.append(f"checkpoint {name} not found")
+            finish()
+        checkpoints.append((Path(name).name, hits[0]))
+        print(f"{name}: {hits[0]}", flush=True)
+    base_root = f"--base-root {WORK}/runs/base {EXTRA}"
+    with open(LOGS / "eval-base.txt", "w") as base_log:
+        base = subprocess.Popen(f"{sys.executable} eval_pair.py --base-only {base_root}", shell=True,
+                                cwd=SRC, env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"},
+                                stdout=base_log, stderr=subprocess.STDOUT)
+        for name, path in checkpoints:
+            sh(f"eval-{name}", f"{sys.executable} eval_pair.py --no-base --adapter {path} "
+                               f"--out {WORK}/runs/{name} {base_root}",
+               env={"CUDA_VISIBLE_DEVICES": "1"}, required=False)
+        code = base.wait()
+    print(f"===== eval-base: exit {code} (log in logs/eval-base.txt)", flush=True)
+    if code:
+        failures.append("eval-base")
+        finish()
+    for name, path in checkpoints:
+        sh(f"compare-{name}", f"{sys.executable} eval_pair.py --reuse --adapter {path} "
+                              f"--out {WORK}/runs/{name} {base_root}",
+           env={"CUDA_VISIBLE_DEVICES": "0"}, required=False)
 else:
     failures.append(f"unknown MODE {MODE}")
 
