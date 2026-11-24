@@ -46,6 +46,8 @@ for found in ("/usr/lib/x86_64-linux-gnu/libcuda.so.1", "/usr/local/nvidia/lib64
         print("libcuda for linking:", found, flush=True)
         break
 
+STARTED = time.time()
+EVAL_START_LIMIT_H = 7.5
 WORK = Path("/kaggle/working")
 SRC = Path("/tmp/coldcap")
 LOGS = WORK / "logs"
@@ -120,6 +122,12 @@ elif MODE == "eval":
                                 cwd=SRC, env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"},
                                 stdout=base_log, stderr=subprocess.STDOUT)
         for name, path in checkpoints:
+            # Kaggle discards everything when a session hits 12 h: never start a checkpoint
+            # that could push past it (a full one takes up to ~3 h on a T4).
+            if time.time() - STARTED > EVAL_START_LIMIT_H * 3600:
+                failures.append(f"eval-{name} skipped (time)")
+                print(f"===== eval-{name}: skipped, {EVAL_START_LIMIT_H} h used", flush=True)
+                continue
             sh(f"eval-{name}", f"{sys.executable} eval_pair.py --no-base --adapter {path} "
                                f"--out {WORK}/runs/{name} {base_root}",
                env={"CUDA_VISIBLE_DEVICES": "1"}, required=False)
