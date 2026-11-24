@@ -55,7 +55,7 @@ def main():
     import torch
     from transformers import AutoTokenizer
     from coldcap import hw
-    from coldcap.policy import Trainer, load_policy
+    from coldcap.policy import Trainer, load_policy, restore_adapter
     from utils.train.rewards import is_task_correct
 
     print("GPUs:\n" + hw.report(), flush=True)
@@ -257,7 +257,7 @@ def main():
                     continue
                 earned = rewards(correct, lengths, controller.alpha, controller.beta,
                                  memory.get(index).l_min, floor_length(memory.get(index), porridge))
-                scores = advantages(earned, scale=not arguments.no_std)
+                scores = advantages(earned, scale=arguments.std)
                 groups.append([{"prompt": prompt, "completion": r["tokens"], "advantage": a}
                                for r, a in zip(group, scores)])
         training = time.time()
@@ -303,7 +303,19 @@ def main():
             model.save_pretrained(checkpoint)
             (checkpoint / "metrics.json").write_text(json.dumps(
                 {"validation": current, "baseline": baseline, "controller": decision}, indent=2))
+            if decision["rollback_to"] is not None and not decision["stop"]:
+                good = out / f"ckpt-{decision['rollback_to']:05d}"
+                restore_adapter(model, good)
+                trainer.reset()
+                adapter = sync()
+                print(f"  out of budget: back to {good.name} (rollback {controller.rollbacks} of "
+                      f"{controller.config.max_rollbacks})", flush=True)
             save_state(out, model, trainer, torch, step, cursor, baseline, memory, controller, rng)
+            if decision["stop"]:
+                print(f"stopping at step {step}: out of budget after "
+                      f"{controller.config.max_rollbacks} rollbacks; best is "
+                      f"ckpt-{controller.last_good:05d}", flush=True)
+                break
         if out_of_time:
             break
 
@@ -393,14 +405,17 @@ def parse_arguments():
     p.add_argument("--max-rounds", type=int, default=4, help="Rounds per step to find cold prompts")
     p.add_argument("--lr", type=float, default=2e-5)
     p.add_argument("--rank", type=int, default=16)
-    p.add_argument("--kl", type=float, default=0.0, help="KL to the base model (0 = off, cheaper)")
-    p.add_argument("--no-std", action="store_true", help="Centre advantages without dividing by std")
+    # An anchor to the base model: without one (runs 1 and 2) nothing held the policy back
+    # once the length reward started to win. Costs one extra no-grad forward per sequence.
+    p.add_argument("--kl", type=float, default=0.04, help="KL to the base model (0 = off)")
+    p.add_argument("--std", action="store_true",
+                   help="Divide advantages by the group std (classic GRPO; cancels alpha)")
     # Skywork is competition maths: at 0.6B it is hot porridge almost always (0 of 10 solved
     # in the smoke run), and each first visit costs a full group of maximum-length answers.
     p.add_argument("--sources", default="gsm8k,commonsense_qa,arc_easy",
                    help="Comma-separated subset of gsm8k,skywork,commonsense_qa,arc_easy")
     # validation
-    p.add_argument("--eval-every", type=int, default=20)
+    p.add_argument("--eval-every", type=int, default=10)
     p.add_argument("--val-per-source", type=int, default=50)
     p.add_argument("--val-samples", type=int, default=2)
     # porridge (None = the dataclass default)
@@ -419,6 +434,7 @@ def parse_arguments():
     p.add_argument("--budget", type=float)
     p.add_argument("--slack", type=float)
     p.add_argument("--min-thinking", type=float, help="Share of replies that must still reason (vs base)")
+    p.add_argument("--max-rollbacks", type=int, help="Returns to the last good checkpoint before stopping")
     return p.parse_args()
 
 

@@ -48,6 +48,18 @@ def load_policy(model_id, revision, device_index, dtype="auto", rank=16, adapter
     return model, dtype
 
 
+def restore_adapter(model, checkpoint):
+    """Put a saved checkpoint's LoRA weights back into the live model (rollback)."""
+    from peft import set_peft_model_state_dict
+    from safetensors.torch import load_file
+
+    device = next(p for p in model.parameters() if p.requires_grad).device
+    weights = load_file(str(checkpoint / "adapter_model.safetensors"), device=str(device))
+    result = set_peft_model_state_dict(model, weights)
+    if result.unexpected_keys:
+        raise RuntimeError(f"{checkpoint}: unexpected LoRA keys {result.unexpected_keys[:3]}")
+
+
 def autocast(dtype):
     if dtype in ("float16", "bfloat16"):
         return torch.autocast("cuda", dtype=torch_dtype(dtype))
@@ -121,6 +133,11 @@ class Trainer:
         self.optimizer.zero_grad(set_to_none=True)
         return {"loss": loss_sum, "kl": kl_sum, "grad_norm": float(norm),
                 "trained_sequences": len(sequences), "trained_tokens": total}
+
+    def reset(self):
+        """Fresh optimizer moments: after a rollback the old ones point toward the collapse."""
+        self.optimizer = torch.optim.AdamW(self.parameters, lr=self.optimizer.defaults["lr"],
+                                           weight_decay=0.0)
 
     def state(self):
         return {"optimizer": self.optimizer.state_dict(), "scaler": self.scaler.state_dict()}

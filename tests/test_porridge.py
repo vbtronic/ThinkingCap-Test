@@ -111,5 +111,38 @@ class CollapseGuards(unittest.TestCase):
         self.assertLess(controller.alpha, 1.0)
 
 
+class Rollback(unittest.TestCase):
+    def test_out_of_budget_goes_back_to_the_last_good_checkpoint(self):
+        controller = Controller(ControllerConfig(max_rollbacks=1))
+        first = controller.observe(10, base_acc=0.6, base_tokens=1000, acc=0.7, tokens=600)
+        self.assertIsNone(first["rollback_to"])
+        controller.observe(15, base_acc=0.6, base_tokens=1000, acc=0.65, tokens=300)
+        bad = controller.observe(20, base_acc=0.6, base_tokens=1000, acc=0.3, tokens=50)
+        self.assertEqual(bad["rollback_to"], 15)
+        self.assertFalse(bad["stop"])
+        again = controller.observe(25, base_acc=0.6, base_tokens=1000, acc=0.3, tokens=50)
+        self.assertTrue(again["stop"])
+        restored = Controller()
+        restored.load(controller.state())
+        self.assertEqual((restored.last_good, restored.rollbacks), (15, 2))
+
+    def test_no_rollback_before_any_good_checkpoint(self):
+        record = Controller().observe(5, base_acc=0.6, base_tokens=1000, acc=0.3, tokens=900)
+        self.assertIsNone(record["rollback_to"])
+
+
+class Advantages(unittest.TestCase):
+    def test_alpha_sets_the_push_when_not_scaled(self):
+        small = advantages(rewards([1, 1], [100, 110], alpha=0.1, beta=0.0))
+        large = advantages(rewards([1, 1], [100, 110], alpha=2.0, beta=0.0))
+        self.assertGreater(large[0], 10 * small[0])
+
+    def test_cap_never_goes_under_the_floor(self):
+        memory = Memory(PorridgeConfig(floor=0.25, eject_factor=2.0, min_cap=64))
+        memory.update(1, [1, 1, 1, 1], [800, 900, 1000, 1100], step=0)
+        memory.update(1, [1, 1, 1, 1], [20, 900, 1000, 1100], step=1)
+        self.assertEqual(memory.cap(1), 400)
+
+
 if __name__ == "__main__":
     unittest.main()

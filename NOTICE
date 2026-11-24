@@ -9,6 +9,6 @@ Copyright 2026 Viktor Brunclík
   README.md, AGENTS.md, IDEA.md, tests/test_porridge.py, tests/test_hardware_compare.py,
   tests/test_rollout_pool.py, and the changes to
   evaluate.py and utils/eval/compare.py (GPU/dtype recording, comparison across
-  hardware).
+  hardware, evaluate.py --resume).
 
 Licensed under the Apache License, Version 2.0 (see LICENSE).

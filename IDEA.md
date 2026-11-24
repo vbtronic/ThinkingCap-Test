@@ -51,7 +51,12 @@ For every prompt, G = 6 answers are generated and graded:
   prompt (in this group or before) — the best answer earns `1 + α`;
 - wrong or cut off by the cap: `−β`.
 
-Advantages are group-relative (GRPO), loss is token-normalised, one on-policy update per step.
+Advantages are group-relative but **not divided by the group's std** (as in Dr. GRPO), loss is
+token-normalised, one on-policy update per step, with a KL anchor to the base model
+(`--kl 0.04`, the LoRA switched off for the reference pass, no second copy of the model).
+Dividing by the std was the root cause of the first two collapses: in a group where every
+answer is right, a 10 % spread in length gets the same ±1 push as a 3× spread, and `α`
+cancels out — the controller could not slow the length pressure at all.
 
 Two guards, added after the first full run collapsed (see Results):
 
@@ -68,7 +73,8 @@ Two guards, added after the first full run collapsed (see Results):
   10 % probability, since the model changes); an unknown prompt gets the evaluation's own
   4096-token cap, so a long but correct answer is never mistaken for a wrong one;
 - **during generation**: a known prompt may generate at most `2 × L_min` tokens — a longer answer
-  could not earn a positive advantage anyway;
+  could not earn a positive advantage anyway — but never less than `2 ×` the floor, or a lucky
+  short answer would ratchet the cap down until sane answers are cut off and count as wrong;
 - **before backward**: sequences with zero advantage are dropped.
 
 Cold prompts are also **replayed**: half of every generation pool returns to prompts already
@@ -90,6 +96,10 @@ The controller compares with the target ratio of the test — at most **0.2 accu
   count as over budget whatever the accuracy: the linear budget alone allowed a model that
   saved 99 % of tokens by not thinking and lost 18 points.
 
+An over-budget validation also **rolls training back** to the last checkpoint inside the budget
+(LoRA weights restored, optimizer moments reset): lowering `α` does not undo a collapse that has
+already happened. After three rollbacks training stops; the last good checkpoint is the result.
+
 Each validation saves a checkpoint, so one run yields the whole length/accuracy curve.
 
 ### 5. Hardware-aware measurement
@@ -103,15 +113,48 @@ itself on two setups is an A/A calibration of the hardware effect.
 
 ## Results
 
-*To be filled in after the runs.*
+Validation (150 held-out training-style questions × 2 samples, same rollout GPU and seeds as
+the base model). Final benchmark numbers follow once the full evaluation is done.
+
+**Run 1** (no guards, std-scaled advantages; base 0.630 accuracy, 1072 tokens):
 
 | checkpoint | tokens saved | accuracy change | notes |
 |---|---|---|---|
-| | | | |
+| ckpt-10 | 51 % | +11 pp | |
+| ckpt-20 | 73 % | +7 pp | full benchmark run done, baseline still missing |
+| ckpt-30 | 85 % | +3 pp | 30-question benchmark smoke: 66 % saved, −9 pp |
+| ckpt-40 → 400 | ~98 % | −18 pp | collapse: `<think>Final answer: X</think>` |
+
+**Run 2** (thinking guard, floor, controller thinking rule; still std-scaled; base 0.613, 1075):
+
+| checkpoint | tokens saved | accuracy change | notes |
+|---|---|---|---|
+| ckpt-10 | 43 % | +11 pp | |
+| ckpt-20 | 68 % | +11 pp | |
+| ckpt-30 | 83 % | +7 pp | |
+| ckpt-35 | 88 % | +1 pp | |
+| ckpt-40 → 51 | 95–97 % | −12 to −25 pp | collapse again, controller reacted too late |
 
 ## What worked, what didn't
 
-*To be filled in.*
+- **Worked:** cold-porridge training finds the waste fast. Within 10–20 steps the model thinks
+  half as long and is *more* accurate on held-out questions of the training kind, likely
+  because rambling answers that run into the cap stop being lost.
+- **Did not work: guards on the reward alone.** Requiring real reasoning in `<think>` and a
+  length floor only delayed the collapse by a few steps. Two things the guards could not reach
+  drove it: std-scaled advantages (full length pressure on every group, `α` irrelevant) and no
+  anchor to the base model. As the model got shorter, more prompts turned hot and were skipped
+  (1138 hot vs 20 cold at the end of run 2), so the last steps trained on ~20 easy prompts
+  with nothing holding the rest of the behaviour in place. Fixes now in the code: unscaled
+  advantages, KL anchor, floor-aware cap, rollback to the last good checkpoint.
+- **Validation ≠ benchmarks.** The validation questions are the training kind (maths, multiple
+  choice); the benchmarks add code, function calls and instruction following. On a small
+  benchmark smoke, run 1's ckpt-30 lost 9 points while validation said +3: the shortening
+  transfers, the accuracy does not always. Earlier checkpoints are the safer picks.
+- **Evaluation is the real cost on a T4.** With Triton attention (FlashInfer fails on the T4)
+  a full 8-sample run of one LoRA took 10.9 h, and the base model, which thinks longer, would
+  need more than a 12 h Kaggle session. `evaluate.py --resume` now continues a run cut off by
+  a session limit from its last whole batch, with identical results.
 
 ## Hardware
 

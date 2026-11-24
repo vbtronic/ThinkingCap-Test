@@ -1,5 +1,5 @@
 # Copyright 2026 BottleCapAI
-# Modified 2026 by Viktor Brunclík: GPU/dtype recording and comparison across hardware (see NOTICE)
+# Modified 2026 by Viktor Brunclík: GPU/dtype recording, comparison across hardware, --resume (see NOTICE)
 # SPDX-License-Identifier: Apache-2.0
 """Scores one checkpoint on four benchmarks and writes the result.
 
@@ -86,7 +86,7 @@ def main():
     suite = load_suite(root, arguments.smoke)
     listing = "smoke" if arguments.smoke else "questions"
     questions = select(read_jsonl(paths(root)[listing]), arguments.benchmarks)
-    prepare_output(out, arguments.regrade)
+    prepare_output(out, arguments.regrade, arguments.resume)
 
     # records are the answers: one generation per question per sample, graded.
     grading = grading_context(suite, arguments)
@@ -141,6 +141,9 @@ def parse_arguments():
     parser.add_argument("--sandbox", choices=sandbox.MODES, help="Default: bwrap if available")
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1),
                         help="Parallel MBPP+ grading processes")
+    parser.add_argument("--resume", action="store_true",
+                        help=f"Continue an interrupted run from the whole batches in its {RECORDS} "
+                             "(same batches and seeds, so the result is the same)")
     parser.add_argument("--regrade", action="store_true",
                         help=f"Re-grade a finished run's {RECORDS} without generating again")
     parser.add_argument("--dtype", default="auto", choices=("auto", "bfloat16", "float16"),
@@ -244,10 +247,13 @@ def save_records(out, records):
     (out / RECORDS).write_text("".join(json.dumps(r) + "\n" for r in records))
 
 
-def prepare_output(out, regrade):
+def prepare_output(out, regrade, resume=False):
     if regrade:
         if not (out / RECORDS).exists():
             raise SystemExit(f"No {RECORDS} to regrade in {out}")
+        return
+    if resume and not (out / RESULTS).exists():
+        out.mkdir(parents=True, exist_ok=True)
         return
     # A crashed run leaves an empty directory behind, and refusing to reuse that
     # would make every retry a manual cleanup. Refuse only finished results.
@@ -288,9 +294,11 @@ def generate(questions, arguments, out):
     arguments.hardware = hardware(arguments)
     print(f"Generating on {arguments.hardware['gpu']} in {arguments.hardware['dtype']}", flush=True)
 
-    records = []
-    with (out / RECORDS).open("w") as stream:
-        for start in range(0, len(jobs), BATCH):
+    records = resumable(jobs, out) if arguments.resume else []
+    if records:
+        print(f"Resuming after {len(records)}/{len(jobs)} generations", flush=True)
+    with (out / RECORDS).open("a" if records else "w") as stream:
+        for start in range(len(records), len(jobs), BATCH):
             batch = jobs[start:start + BATCH]
             settings = [SamplingParams(max_tokens=token_cap(job["row"]["dataset"], arguments),
                                        seed=job["seed"], stop_token_ids=list(eos_ids),
@@ -306,6 +314,25 @@ def generate(questions, arguments, out):
             stream.flush()  # a crash late in a long run keeps what it earned
             print(f"{start + len(batch)}/{len(jobs)}", flush=True)
     return records
+
+
+def resumable(jobs, out):
+    """The records of an interrupted run that can be kept: whole batches, in job order.
+
+    A batch is generated together, so a partial one is dropped and generated again whole;
+    that keeps every batch, and so every reply, identical to an uninterrupted run."""
+    path = out / RECORDS
+    if not path.exists():
+        return []
+    kept = []
+    for record, job in zip(read_jsonl(path), jobs):
+        if ((record["id"], record["sample_index"], record["seed"])
+                != (job["row"]["id"], job["sample"], job["seed"])):
+            break
+        kept.append(record)
+    kept = kept[:len(kept) // BATCH * BATCH]
+    path.write_text("".join(json.dumps(r) + "\n" for r in kept))
+    return kept
 
 
 def load_engine(arguments, longest_generation):

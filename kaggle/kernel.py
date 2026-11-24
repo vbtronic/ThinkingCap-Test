@@ -22,7 +22,7 @@ MODE = "smoke"
 COMMIT = "main"
 REPO = "https://github.com/vbtronic/ThinkingCap-Test.git"
 EXTRA = ""            # extra flags for train_coldcap.py / eval_pair.py
-RESUME_FROM = ""      # e.g. /kaggle/input/<kernel-output>/outputs/run1
+RESUME_FROM = ""      # train: .../outputs/run1 to continue; eval: a folder whose runs/ to finish
 CHECKPOINT = ""       # for MODE=eval: ckpt names under /kaggle/input, comma-separated
 BUDGET_H = ""         # GPU quota left (hours): stop, checkpoint and save before it runs out
 
@@ -52,12 +52,17 @@ STARTED = time.time()
 # Kaggle discards a session's output when it hits 12 h or the weekly GPU quota runs out, so
 # every mode stops early enough to write its results. BUDGET_H is the quota left at push time.
 SESSION_H = min(12.0, float(BUDGET_H)) if BUDGET_H else 12.0
-EVAL_START_LIMIT_H = SESSION_H - 4.5   # a full checkpoint eval takes up to ~3 h on a T4
 WORK = Path("/kaggle/working")
 SRC = Path("/tmp/coldcap")
 LOGS = WORK / "logs"
 LOGS.mkdir(parents=True, exist_ok=True)
 failures = []
+
+
+def until_limit(command):
+    """Interrupt a command before the session limit; evaluate.py --resume picks it up later."""
+    left = int((SESSION_H - 0.4) * 3600 - (time.time() - STARTED))
+    return f"timeout --signal=INT --kill-after=120 {max(left, 60)} {command}"
 
 
 def sh(name, command, env=None, required=True):
@@ -95,7 +100,7 @@ sh("data", f"{sys.executable} utils/train/prepare_data.py && {sys.executable} ut
 sh("hw", f"{sys.executable} -m coldcap.hw")
 
 out = WORK / "outputs" / "run1"
-if RESUME_FROM and not out.exists():
+if MODE in ("smoke", "train") and RESUME_FROM and not out.exists():
     sh("resume-copy", f"mkdir -p {out.parent} && cp -r {RESUME_FROM} {out}")
 
 if MODE == "smoke":
@@ -127,18 +132,22 @@ elif MODE == "eval":
         checkpoints.append((Path(name).name, hits[0]))
         print(f"{name}: {hits[0]}", flush=True)
     base_root = f"--base-root {WORK}/runs/base {EXTRA}"
+    if RESUME_FROM:
+        # Runs an earlier session cut off: their records.jsonl are continued, not redone.
+        sh("resume-copy", f"mkdir -p {WORK}/runs && cp -rn {RESUME_FROM}/runs/. {WORK}/runs/")
     with open(LOGS / "eval-base.txt", "w") as base_log:
-        base = subprocess.Popen(f"{sys.executable} eval_pair.py --base-only {base_root}", shell=True,
+        base = subprocess.Popen(until_limit(f"{sys.executable} eval_pair.py --base-only {base_root}"),
+                                shell=True,
                                 cwd=SRC, env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"},
                                 stdout=base_log, stderr=subprocess.STDOUT)
         for name, path in checkpoints:
-            # Never start a checkpoint that could push the session past its limit.
-            if time.time() - STARTED > EVAL_START_LIMIT_H * 3600:
+            # Not worth starting with little time left; an unfinished one resumes next session.
+            if time.time() - STARTED > (SESSION_H - 1.0) * 3600:
                 failures.append(f"eval-{name} skipped (time)")
-                print(f"===== eval-{name}: skipped, {EVAL_START_LIMIT_H} h used", flush=True)
+                print(f"===== eval-{name}: skipped, session nearly over", flush=True)
                 continue
-            sh(f"eval-{name}", f"{sys.executable} eval_pair.py --no-base --adapter {path} "
-                               f"--out {WORK}/runs/{name} {base_root}",
+            sh(f"eval-{name}", until_limit(f"{sys.executable} eval_pair.py --no-base --adapter {path} "
+                                           f"--out {WORK}/runs/{name} {base_root}"),
                env={"CUDA_VISIBLE_DEVICES": "1"}, required=False)
         code = base.wait()
     print(f"===== eval-base: exit {code} (log in logs/eval-base.txt)", flush=True)

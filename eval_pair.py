@@ -155,7 +155,8 @@ def check_cached(base, gpu, dtype):
 
 
 def evaluate(flags, dtype, passthrough):
-    command = [sys.executable, str(ROOT / "evaluate.py")] + flags + [
+    # --resume: a run cut off by a session limit continues from its last whole batch.
+    command = [sys.executable, str(ROOT / "evaluate.py"), "--resume"] + flags + [
         dtype if item == "PLACEHOLDER" else item for item in passthrough]
     print("$ " + " ".join(command), flush=True)
     subprocess.run(command, check=True, cwd=ROOT)

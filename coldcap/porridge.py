@@ -26,7 +26,9 @@ Three parts:
 
 * Controller: after each validation it compares accuracy and tokens with the base model
   and moves alpha / beta so that training stays inside the competition's budget of
-  0.2 accuracy points per 1% of tokens saved.
+  0.2 accuracy points per 1% of tokens saved. Outside the budget it also sends training
+  back to the last checkpoint inside it, and stops after `max_rollbacks` such returns.
+  Advantages are not divided by the group std, so alpha really sets the length pressure.
 
 Plus the memory that makes early ejection possible: prompts already known to be hot or icy
 are skipped before any token is generated, and a known prompt's generation is capped at
@@ -96,7 +98,10 @@ class Memory:
         known = self.prompts.get(index)
         if known is None or known.l_min is None:
             return self.config.max_cap
-        cap = math.ceil(self.config.eject_factor * known.l_min)
+        # Never below eject_factor x the floor: once l_min shrinks under it, a tighter cap
+        # would only cut off answers of a sane length and count them as wrong.
+        shortest = max(known.l_min, floor_length(known, self.config) or 0)
+        cap = math.ceil(self.config.eject_factor * shortest)
         return max(self.config.min_cap, min(self.config.max_cap, cap))
 
     def update(self, index, correct, lengths, step):
@@ -181,8 +186,13 @@ def rewards(correct, lengths, alpha, beta, l_history=None, l_floor=None):
     return out
 
 
-def advantages(group_rewards, scale=True, eps=1e-4):
-    """GRPO: reward minus the group mean, optionally divided by the group's std."""
+def advantages(group_rewards, scale=False, eps=1e-4):
+    """GRPO: reward minus the group mean, optionally divided by the group's std.
+
+    Off by default (as in Dr. GRPO). Dividing by the std hands every group the same push,
+    however small its spread: in a group where all are right and lengths differ by 10%,
+    the shortest gets +1 std all the same, and alpha cancels out -- the controller could
+    not slow the length pressure, which drove both early runs into collapse."""
     mean = sum(group_rewards) / len(group_rewards)
     centred = [r - mean for r in group_rewards]
     if not scale:
@@ -203,6 +213,7 @@ class ControllerConfig:
     budget: float = 0.2          # allowed accuracy points lost per 1% of tokens saved
     slack: float = 1.0           # extra points allowed, for validation noise
     min_thinking: float = 0.95   # validation replies that still reason, relative to the base
+    max_rollbacks: int = 3       # out of budget: go back to the last good checkpoint, this often
 
 
 @dataclass
@@ -211,6 +222,8 @@ class Controller:
     alpha: float = 0.0
     beta: float = 0.0
     history: list = field(default_factory=list)
+    last_good: int | None = None     # step of the last checkpoint inside the budget
+    rollbacks: int = 0
 
     def __post_init__(self):
         self.alpha = self.alpha or self.config.alpha
@@ -233,15 +246,26 @@ class Controller:
         else:
             self.alpha = max(c.alpha_bounds[0], self.alpha * c.down)
             self.beta = min(c.beta_bounds[1], self.beta + c.beta_step)
+        # Outside the budget the weights themselves are suspect (a collapse does not undo
+        # itself when alpha drops), so training goes back to the last good checkpoint.
+        rollback = None
+        if within:
+            self.last_good = step
+        elif self.last_good is not None:
+            rollback = self.last_good
+            self.rollbacks += 1
         record = {"step": step, "accuracy": acc, "tokens": tokens, "saved_pct": saved_pct,
                   "drop_pp": drop_pp, "allowed_pp": self.allowed_drop(saved_pct),
                   "thinking": thinking, "within_budget": within,
-                  "alpha": self.alpha, "beta": self.beta}
+                  "alpha": self.alpha, "beta": self.beta, "rollback_to": rollback,
+                  "stop": self.rollbacks > c.max_rollbacks}
         self.history.append(record)
         return record
 
     def state(self):
-        return {"alpha": self.alpha, "beta": self.beta, "history": self.history}
+        return {"alpha": self.alpha, "beta": self.beta, "history": self.history,
+                "last_good": self.last_good, "rollbacks": self.rollbacks}
 
     def load(self, state):
         self.alpha, self.beta, self.history = state["alpha"], state["beta"], state["history"]
+        self.last_good, self.rollbacks = state.get("last_good"), state.get("rollbacks", 0)
