@@ -5,8 +5,9 @@ Copyright 2026 BottleCapAI
   https://github.com/BottleCapAI/ThinkingCap-Test
 
 Copyright 2026 Viktor Brunclík
-  ColdCap: coldcap/, train_coldcap.py, eval_pair.py, kaggle/, README.md, AGENTS.md, IDEA.md,
-  tests/test_porridge.py, tests/test_hardware_compare.py, and the changes to
+  ColdCap: coldcap/, train_coldcap.py, eval_pair.py, package_submission.py, kaggle/,
+  README.md, AGENTS.md, IDEA.md, tests/test_porridge.py, tests/test_hardware_compare.py,
+  tests/test_rollout_pool.py, and the changes to
   evaluate.py and utils/eval/compare.py (GPU/dtype recording, comparison across
   hardware).
 

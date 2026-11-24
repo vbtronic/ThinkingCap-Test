@@ -28,6 +28,7 @@ shorter at the same accuracy. Task and rules: `TASK.md`. Method: `IDEA.md`. Over
   they match; each side picks its own dtype.
 - `train_coldcap.py` — training loop; state in `<out>/state.json`, `trainer.pt`, `latest/`.
 - `eval_pair.py` — baseline cached per (GPU, dtype); always compare on the same setup.
+- `package_submission.py` — builds `dist/viktor-brunclik.zip`; needs a clean, committed tree.
 - `evaluate.py`, `compare.py`, `utils/` — provided by BottleCapAI; changes kept minimal and noted
   in their headers and in `NOTICE`.
 - `kaggle/` — `kernel.py` (script kernel), `push.py` (pushes it), `coldcap.ipynb` (interactive).

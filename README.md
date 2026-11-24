@@ -23,6 +23,7 @@ question, and a controller tunes the length pressure to stay within the test's b
 | `coldcap/hw.py` | per-GPU capabilities (bf16, vLLM); GPUs may differ |
 | `train_coldcap.py` | the training loop, checkpoints, `--resume` |
 | `eval_pair.py` | scores the base model and a checkpoint on the same GPU and dtype, then compares |
+| `package_submission.py` | builds the submission zip (LoRA, bundle, results, IDEA, links) |
 | `evaluate.py`, `compare.py`, `utils/` | the provided evaluation (records GPU/dtype; compares across hardware) |
 | `kaggle/` | Kaggle notebook, script kernel and push helper |
 | `tests/` | unit tests (run without a GPU) |
