@@ -53,6 +53,15 @@ For every prompt, G = 6 answers are generated and graded:
 
 Advantages are group-relative (GRPO), loss is token-normalised, one on-policy update per step.
 
+Two guards, added after the first full run collapsed (see Results):
+
+- **a correct answer must reason**: during training, a reply counts as correct only if its
+  `<think>` block holds real reasoning (≥ 8 words besides any "Final answer" line). The
+  evaluation does not check this, but the rules require the model to think before answering —
+  and without the guard, thinking nothing is the cheapest way to collect the length reward;
+- **a floor**: `L_ref` never goes below 25 % of the shortest correct answer first seen for the
+  prompt, so once an answer is that tight, being even shorter earns nothing.
+
 ### 3. Early ejection — compute never spent
 
 - **before generation**: prompts already known to be hot or icy are skipped (re-tested with
@@ -70,13 +79,16 @@ half explores prompts not seen yet, to find new cold ones.
 
 ### 4. Adaptive controller
 
-Every 20 steps the same 200 validation questions (held out from the training sets, fixed seeds)
+Every 10 steps the same 150 validation questions (held out from the training sets, fixed seeds)
 are answered by the current policy on the same rollout GPU on which the base model was measured.
 The controller compares with the target ratio of the test — at most **0.2 accuracy points per
 1 % of tokens saved** (+ a noise margin):
 
 - within budget → increase `α` (push for shorter), relax `β`;
-- over budget → decrease `α`, increase `β` (wrong answers cost more).
+- over budget → decrease `α`, increase `β` (wrong answers cost more);
+- replies that stop reasoning (under 95 % of the base model's share of real `<think>` blocks)
+  count as over budget whatever the accuracy: the linear budget alone allowed a model that
+  saved 99 % of tokens by not thinking and lost 18 points.
 
 Each validation saves a checkpoint, so one run yields the whole length/accuracy curve.
 

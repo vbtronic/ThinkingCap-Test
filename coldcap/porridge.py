@@ -20,7 +20,9 @@ Three parts:
     correct   1 + alpha * L_ref / L     (the shortest correct one earns 1 + alpha)
     wrong     -beta                     (truncated counts as wrong)
   L_ref is the shortest correct length in the group or in the prompt's history, whichever
-  is shorter, so a prompt keeps pulling toward its best-ever answer.
+  is shorter, so a prompt keeps pulling toward its best-ever answer -- but never below
+  `floor` x the shortest correct answer first seen for it: past that point being shorter
+  earns nothing more. "Correct" also requires real reasoning inside <think> (`thinks`).
 
 * Controller: after each validation it compares accuracy and tokens with the base model
   and moves alpha / beta so that training stays inside the competition's budget of
@@ -50,6 +52,8 @@ class PorridgeConfig:
     max_cap: int = 4096          # and never above this: the evaluation's own cap, so a
                                  # long but correct answer is not mistaken for a wrong one
     replay: float = 0.5          # share of each pool drawn from prompts known to be cold
+    floor: float = 0.25          # no length reward below this x the prompt's first L_min
+    min_think_words: int = 8     # a rollout must reason in <think> to count as correct
 
 
 @dataclass
@@ -57,6 +61,7 @@ class PromptMemory:
     seen: int = 0                # how many times its group was generated
     pass_rate: float | None = None   # pass rate of the last group
     l_min: int | None = None     # shortest correct length ever seen
+    l_first: int | None = None   # shortest correct length the first time one was seen
     temperature: str = UNKNOWN
     step: int = -1               # training step it was last generated at
 
@@ -104,6 +109,8 @@ class Memory:
         if right:
             shortest = min(right)
             memory.l_min = shortest if memory.l_min is None else min(memory.l_min, shortest)
+            if memory.l_first is None:
+                memory.l_first = shortest
         memory.temperature = temperature(correct, lengths, self.config)
         return memory.temperature
 
@@ -138,11 +145,33 @@ def temperature(correct, lengths, config):
     return COLD
 
 
-def rewards(correct, lengths, alpha, beta, l_history=None):
+def floor_length(memory, config):
+    """Below this length a prompt earns no more for being shorter (None: no floor yet)."""
+    if memory.l_first is None or not config.floor:
+        return None
+    return math.ceil(config.floor * memory.l_first)
+
+
+def thinks(text, min_words=8):
+    """Did the reply reason before answering? Its <think> block, minus any line that only
+    states the final answer, must hold at least `min_words` words. Without this rule the
+    length reward is cheapest to collect by thinking nothing at all, which the first full
+    run did after ~35 steps (<think>Final answer: 72</think>)."""
+    if "</think>" not in text:
+        return False
+    inside = text.split("</think>", 1)[0].split("<think>")[-1]
+    lines = [line for line in inside.splitlines()
+             if line.strip() and not line.strip().lower().startswith("final answer")]
+    return sum(len(line.split()) for line in lines) >= min_words
+
+
+def rewards(correct, lengths, alpha, beta, l_history=None, l_floor=None):
     """Reward of each rollout in one group; see the module docstring."""
     right = [n for ok, n in zip(correct, lengths) if ok]
     candidates = right + ([l_history] if l_history else [])
     l_ref = min(candidates) if candidates else None
+    if l_ref is not None and l_floor:
+        l_ref = max(l_ref, l_floor)
     out = []
     for ok, n in zip(correct, lengths):
         if ok:
@@ -173,6 +202,7 @@ class ControllerConfig:
     beta_step: float = 0.25      # added to beta when over budget, decays by half otherwise
     budget: float = 0.2          # allowed accuracy points lost per 1% of tokens saved
     slack: float = 1.0           # extra points allowed, for validation noise
+    min_thinking: float = 0.95   # validation replies that still reason, relative to the base
 
 
 @dataclass
@@ -190,11 +220,12 @@ class Controller:
         """Accuracy points we may lose for this saving (never negative)."""
         return max(0.0, self.config.budget * saved_pct) + self.config.slack
 
-    def observe(self, step, base_acc, base_tokens, acc, tokens):
-        """Validation result in, new alpha/beta out. Accuracies are fractions (0..1)."""
+    def observe(self, step, base_acc, base_tokens, acc, tokens, thinking=1.0):
+        """Validation result in, new alpha/beta out. Accuracies are fractions (0..1);
+        `thinking` is the share of replies that reason, relative to the base model's."""
         saved_pct = 100.0 * (1.0 - tokens / base_tokens)
         drop_pp = 100.0 * (base_acc - acc)
-        within = drop_pp <= self.allowed_drop(saved_pct)
+        within = drop_pp <= self.allowed_drop(saved_pct) and thinking >= self.config.min_thinking
         c = self.config
         if within:
             self.alpha = min(c.alpha_bounds[1], self.alpha * c.up)
@@ -204,7 +235,8 @@ class Controller:
             self.beta = min(c.beta_bounds[1], self.beta + c.beta_step)
         record = {"step": step, "accuracy": acc, "tokens": tokens, "saved_pct": saved_pct,
                   "drop_pp": drop_pp, "allowed_pp": self.allowed_drop(saved_pct),
-                  "within_budget": within, "alpha": self.alpha, "beta": self.beta}
+                  "thinking": thinking, "within_budget": within,
+                  "alpha": self.alpha, "beta": self.beta}
         self.history.append(record)
         return record
 

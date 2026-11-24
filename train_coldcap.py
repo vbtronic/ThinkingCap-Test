@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from coldcap.porridge import (COLD, HOT, ICY, Controller, ControllerConfig, Memory,  # noqa: E402
-                              PorridgeConfig, advantages, rewards)
+                              PorridgeConfig, advantages, floor_length, rewards, thinks)
 
 BASE_MODEL = "Qwen/Qwen3-0.6B"
 BASE_REVISION = "c1899de289a04d12100db370d81485cdf75e47ca"   # the one evaluate.py pins
@@ -157,10 +157,13 @@ def main():
                          "Resume on the same rollout card or start a new --out.")
 
     def grade(rows, results):
-        return [int(r["finished"] and is_task_correct(
-                    tokenizer.decode(r["tokens"], skip_special_tokens=True),
-                    row["answer"], row["task"]))
-                for row, r in zip(rows, results)]
+        """-> (task-correct flags, reasoned-in-<think> flags), one per result."""
+        correct, reasoned = [], []
+        for row, r in zip(rows, results):
+            text = tokenizer.decode(r["tokens"], skip_special_tokens=True)
+            correct.append(int(r["finished"] and is_task_correct(text, row["answer"], row["task"])))
+            reasoned.append(int(thinks(text, porridge.min_think_words)))
+        return correct, reasoned
 
     def validate(adapter):
         """Same questions, same seeds, same rollout card: only the weights differ."""
@@ -168,7 +171,7 @@ def main():
                     for i, ids in enumerate(val_ids) for s in range(arguments.val_samples)]
         rows = [row for row in val_rows for _ in range(arguments.val_samples)]
         results = engine.generate(requests, adapter, fixed=True)
-        correct = grade(rows, results)
+        correct, reasoned = grade(rows, results)   # accuracy as evaluate.py would score it
         tokens = [len(r["tokens"]) for r in results]
         per_source = {}
         for row, ok, n in zip(rows, correct, tokens):
@@ -177,6 +180,7 @@ def main():
             bucket["tokens"] += n
             bucket["n"] += 1
         return {"accuracy": sum(correct) / len(correct), "tokens": sum(tokens) / len(tokens),
+                "thinking": sum(reasoned) / len(reasoned),
                 "per_source": {k: {"accuracy": v["correct"] / v["n"], "tokens": v["tokens"] / v["n"]}
                                for k, v in per_source.items()},
                 "rollout": engine.info}
@@ -242,14 +246,17 @@ def main():
             for k, index in enumerate(batch):
                 group = results[k * arguments.group:(k + 1) * arguments.group]
                 prompt = requests[k * arguments.group]["ids"]
-                correct = grade([train_rows[index]] * len(group), group)
+                # Training is stricter than scoring: a right answer without reasoning in
+                # <think> counts as wrong, so skipping the thinking can never pay.
+                correct, reasoned = grade([train_rows[index]] * len(group), group)
+                correct = [c and t for c, t in zip(correct, reasoned)]
                 lengths = [len(r["tokens"]) for r in group]
                 kind = memory.update(index, correct, lengths, step)
                 stats[kind] += 1
                 if kind != COLD:     # every cold group is used, even past --prompts-per-step
                     continue
                 earned = rewards(correct, lengths, controller.alpha, controller.beta,
-                                 memory.get(index).l_min)
+                                 memory.get(index).l_min, floor_length(memory.get(index), porridge))
                 scores = advantages(earned, scale=not arguments.no_std)
                 groups.append([{"prompt": prompt, "completion": r["tokens"], "advantage": a}
                                for r, a in zip(group, scores)])
@@ -284,11 +291,13 @@ def main():
             else:
                 current = validate(adapter)
             validation_seconds = max(validation_seconds, time.time() - validating)
+            thinking = current["thinking"] / max(baseline.get("thinking", 1.0), 1e-9)
             decision = controller.observe(step, baseline["accuracy"], baseline["tokens"],
-                                          current["accuracy"], current["tokens"])
+                                          current["accuracy"], current["tokens"], thinking)
             print(f"  val: accuracy {current['accuracy']:.3f} (base {baseline['accuracy']:.3f}), "
                   f"saved {decision['saved_pct']:+.1f}%, drop {decision['drop_pp']:+.2f} pp "
-                  f"(allowed {decision['allowed_pp']:.2f}) -> alpha {controller.alpha:.3f}, "
+                  f"(allowed {decision['allowed_pp']:.2f}), thinking {current['thinking']:.2f} "
+                  f"-> alpha {controller.alpha:.3f}, "
                   f"beta {controller.beta:.3f}", flush=True)
             checkpoint = out / f"ckpt-{step:05d}"
             model.save_pretrained(checkpoint)
@@ -402,11 +411,14 @@ def parse_arguments():
     p.add_argument("--min-cap", type=int)
     p.add_argument("--max-cap", type=int)
     p.add_argument("--replay", type=float, help="Share of each pool replaying known cold prompts")
+    p.add_argument("--floor", type=float, help="No length reward below this x a prompt's first L_min")
+    p.add_argument("--min-think-words", type=int, help="Words of reasoning a correct rollout needs")
     # controller
     p.add_argument("--alpha", type=float)
     p.add_argument("--beta", type=float)
     p.add_argument("--budget", type=float)
     p.add_argument("--slack", type=float)
+    p.add_argument("--min-thinking", type=float, help="Share of replies that must still reason (vs base)")
     return p.parse_args()
 
 

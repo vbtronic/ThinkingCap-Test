@@ -5,7 +5,8 @@
 import unittest
 
 from coldcap.porridge import (COLD, HOT, ICY, Controller, ControllerConfig, Memory,
-                              PorridgeConfig, advantages, rewards, temperature)
+                              PorridgeConfig, advantages, floor_length, rewards, temperature,
+                              thinks)
 
 
 class Temperature(unittest.TestCase):
@@ -81,6 +82,33 @@ class ControllerRules(unittest.TestCase):
         self.assertFalse(record["within_budget"])
         self.assertLess(controller.alpha, pushed)
         self.assertGreater(controller.beta, 0.0)
+
+
+class CollapseGuards(unittest.TestCase):
+    def test_answer_inside_think_is_not_thinking(self):
+        self.assertFalse(thinks("<think>\nFinal answer: 48 + 24 = 72\n</think>\n\nFinal answer: 72"))
+        self.assertFalse(thinks("<think>\n\n</think>\n\nFinal answer: 72"))
+        self.assertFalse(thinks("no think block\nFinal answer: 72"))
+        self.assertTrue(thinks("<think>\nHalf of 48 is 24, and 48 plus 24 gives 72 in total.\n"
+                               "</think>\n\nFinal answer: 72"))
+
+    def test_no_reward_for_going_below_the_floor(self):
+        memory = Memory(PorridgeConfig(floor=0.25))
+        memory.update(1, [1, 1, 1, 1], [400, 800, 600, 900], step=0)
+        floor = floor_length(memory.get(1), memory.config)
+        self.assertEqual(floor, 100)
+        memory.update(1, [1, 1, 1, 1], [40, 100, 300, 500], step=1)
+        self.assertEqual(memory.get(1).l_first, 400)       # the floor does not chase l_min
+        earned = rewards([1, 1, 1], [40, 100, 300], alpha=1.0, beta=0.0, l_floor=100)
+        self.assertEqual(earned[0], earned[1])              # 40 is not better than 100
+        self.assertGreater(earned[1], earned[2])
+
+    def test_controller_backs_off_when_replies_stop_reasoning(self):
+        controller = Controller(ControllerConfig(alpha=1.0))
+        record = controller.observe(40, base_acc=0.63, base_tokens=1072, acc=0.45, tokens=16,
+                                    thinking=0.2)
+        self.assertFalse(record["within_budget"])
+        self.assertLess(controller.alpha, 1.0)
 
 
 if __name__ == "__main__":
