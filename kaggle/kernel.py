@@ -147,6 +147,9 @@ elif MODE == "eval":
                                 cwd=SRC, env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"},
                                 stdout=base_log, stderr=subprocess.STDOUT)
         for name, path in checkpoints:
+            if (WORK / "runs" / name / "results.json").exists():
+                print(f"===== eval-{name}: already scored in an earlier session", flush=True)
+                continue
             # Not worth starting with little time left; an unfinished one resumes next session.
             if time.time() - STARTED > (SESSION_H - 1.0) * 3600:
                 failures.append(f"eval-{name} skipped (time)")
