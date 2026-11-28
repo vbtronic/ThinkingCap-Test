@@ -134,7 +134,13 @@ elif MODE == "eval":
     base_root = f"--base-root {WORK}/runs/base {EXTRA}"
     if RESUME_FROM:
         # Runs an earlier session cut off: their records.jsonl are continued, not redone.
-        sh("resume-copy", f"mkdir -p {WORK}/runs && cp -rn {RESUME_FROM}/runs/. {WORK}/runs/")
+        # RESUME_FROM may name the attached kernel's folder or anything above its runs/.
+        found = sorted(Path(RESUME_FROM).rglob("runs/base"))
+        if not found:
+            failures.append(f"no runs/base under {RESUME_FROM}")
+            finish()
+        sh("resume-copy", f"mkdir -p {WORK}/runs && cp -rn {found[0].parent}/. {WORK}/runs/ && "
+                          f"find {WORK}/runs -name records.jsonl | xargs wc -l")
     with open(LOGS / "eval-base.txt", "w") as base_log:
         base = subprocess.Popen(until_limit(f"{sys.executable} eval_pair.py --base-only {base_root}"),
                                 shell=True,

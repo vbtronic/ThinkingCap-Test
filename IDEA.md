@@ -137,6 +137,11 @@ the base model). Final benchmark numbers follow once the full evaluation is done
 
 ## What worked, what didn't
 
+- **What the LoRA is.** A behavioural task vector (task arithmetic, Ilharco et al. 2022): a
+  low-rank weight delta that changes *how long* the model thinks, not *what* it knows. The
+  model can already answer tersely; RL only teaches it to pick that path, which carries little
+  information — hence a rank-16 LoRA moves thinking length by half within 10–20 steps.
+
 - **Worked:** cold-porridge training finds the waste fast. Within 10–20 steps the model thinks
   half as long and is *more* accurate on held-out questions of the training kind, likely
   because rambling answers that run into the cap stop being lost.
