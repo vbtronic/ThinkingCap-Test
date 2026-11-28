@@ -38,6 +38,8 @@ def main():
                         help="Weekly GPU quota left: the kernel stops and saves before it runs out")
     parser.add_argument("--source", action="append", default=[],
                         help="Kernel whose output to attach as input (user/slug), repeatable")
+    parser.add_argument("--dataset", action="append", default=[],
+                        help="Dataset to attach as input (user/slug), repeatable")
     parser.add_argument("--accelerator", default="NvidiaTeslaT4")
     # The image the author's working kernels ran on; an empty image left a kernel QUEUED for hours.
     parser.add_argument("--docker-image", default="gcr.io/kaggle-private-byod/python@sha256:"
@@ -64,7 +66,7 @@ def main():
             "id": f"{arguments.user}/{slug}", "title": slug, "code_file": f"{slug}.py",
             "language": "python", "kernel_type": "script", "is_private": True,
             "enable_gpu": True, "enable_tpu": False, "enable_internet": True,
-            "dataset_sources": [], "competition_sources": [], "model_sources": [],
+            "dataset_sources": arguments.dataset, "competition_sources": [], "model_sources": [],
             "kernel_sources": arguments.source, "machine_shape": arguments.accelerator,
             "docker_image": arguments.docker_image,
         }, indent=2))

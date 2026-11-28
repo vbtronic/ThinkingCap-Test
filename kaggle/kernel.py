@@ -134,10 +134,10 @@ elif MODE == "eval":
     base_root = f"--base-root {WORK}/runs/base {EXTRA}"
     if RESUME_FROM:
         # Runs an earlier session cut off: their records.jsonl are continued, not redone.
-        # RESUME_FROM may name the attached kernel's folder or anything above its runs/.
-        found = sorted(Path(RESUME_FROM).rglob("runs/base"))
+        # A base/<setup>/records.jsonl marks the runs folder (kernel output or a dataset).
+        found = sorted(r.parent.parent for r in Path(RESUME_FROM).rglob("base/*/records.jsonl"))
         if not found:
-            failures.append(f"no runs/base under {RESUME_FROM}")
+            failures.append(f"no base/*/records.jsonl under {RESUME_FROM}")
             finish()
         sh("resume-copy", f"mkdir -p {WORK}/runs && cp -rn {found[0].parent}/. {WORK}/runs/ && "
                           f"find {WORK}/runs -name records.jsonl | xargs wc -l")
